@@ -42,8 +42,9 @@ if run_uploaded or run_preloaded:
             
             # The spec says reproduce command is: python rank.py --candidates ./candidates.jsonl --out ./submission.csv
             # We mock the candidates.jsonl file path since our pipeline reads from artifacts/
+            script_name = "rank_small.py" if run_uploaded else "rank.py"
             cmd = [
-                "python", "rank.py", 
+                "python", script_name, 
                 "--candidates", "./candidates.jsonl", 
                 "--artifacts", "./artifacts", 
                 "--out", "./submission.csv"
@@ -57,7 +58,7 @@ if run_uploaded or run_preloaded:
                 
                 # Display output
                 df = pd.read_csv("submission.csv")
-                st.subheader(f"Top 100 Candidates (Sample: {len(df)})")
+                st.subheader(f"Top Candidates (Ranked: {len(df)})")
                 
                 # Make the table wide and formatted
                 st.dataframe(
