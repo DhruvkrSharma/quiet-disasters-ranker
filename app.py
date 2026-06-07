@@ -54,35 +54,46 @@ if run_uploaded or run_preloaded:
             duration = time.time() - start
             
             if result.returncode == 0:
-                st.success(f"✅ Ranking completed successfully in {duration:.1f} seconds!")
-                
-                # Display output
-                df = pd.read_csv("submission.csv")
-                st.subheader(f"Top Candidates (Ranked: {len(df)})")
-                
-                # Make the table wide and formatted
-                st.dataframe(
-                    df,
-                    column_config={
-                        "rank": st.column_config.NumberColumn("Rank", format="%d"),
-                        "score": st.column_config.NumberColumn("Score", format="%.6f"),
-                        "reasoning": st.column_config.TextColumn("Reasoning", width="large")
-                    },
-                    use_container_width=True,
-                    hide_index=True
-                )
-                
-                # Provide CSV download
-                with open("submission.csv", "rb") as file:
-                    st.download_button(
-                        label="📥 Download submission.csv",
-                        data=file,
-                        file_name="submission.csv",
-                        mime="text/csv",
-                    )
-                
-                with st.expander("🛠️ View Pipeline Logs"):
-                    st.code(result.stderr)
+                st.session_state.run_success = True
+                st.session_state.run_failed = False
+                st.session_state.duration = duration
+                st.session_state.stderr = result.stderr
             else:
-                st.error("❌ Ranking failed!")
-                st.code(result.stderr)
+                st.session_state.run_success = False
+                st.session_state.run_failed = True
+                st.session_state.stderr = result.stderr
+
+if st.session_state.get("run_success", False) and os.path.exists("submission.csv"):
+    st.success(f"✅ Ranking completed successfully in {st.session_state.duration:.1f} seconds!")
+    
+    # Display output
+    df = pd.read_csv("submission.csv")
+    st.subheader(f"Top Candidates (Ranked: {len(df)})")
+    
+    # Make the table wide and formatted
+    st.dataframe(
+        df,
+        column_config={
+            "rank": st.column_config.NumberColumn("Rank", format="%d"),
+            "score": st.column_config.NumberColumn("Score", format="%.6f"),
+            "reasoning": st.column_config.TextColumn("Reasoning", width="large")
+        },
+        use_container_width=True,
+        hide_index=True
+    )
+    
+    # Provide CSV download
+    with open("submission.csv", "rb") as file:
+        st.download_button(
+            label="📥 Download submission.csv",
+            data=file,
+            file_name="submission.csv",
+            mime="text/csv",
+        )
+    
+    with st.expander("🛠️ View Pipeline Logs"):
+        st.code(st.session_state.stderr)
+
+elif st.session_state.get("run_failed", False):
+    st.error("❌ Ranking failed!")
+    st.code(st.session_state.stderr)
