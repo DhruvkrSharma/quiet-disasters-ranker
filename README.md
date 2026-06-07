@@ -31,6 +31,8 @@ python rank.py --candidates ./candidates.jsonl --artifacts ./artifacts --out ./s
 This command reads the local `./artifacts/` and outputs the final `submission.csv` containing exactly 100 candidates with monotonically non-increasing scores, deterministic tie-breaks, and dynamic reasoning strings.
 
 ### 3. Sandbox Sample Ranking (`rank_small.py`)
+**Live Demo:** [https://huggingface.co/spaces/Abhii2005/Quiet-Disasters-Ranker](https://huggingface.co/spaces/Abhii2005/Quiet-Disasters-Ranker)
+
 To comply with the requirement that the HuggingFace sandbox must allow judges to upload a small sample (≤100 candidates) and rank *only* those candidates, we created **`rank_small.py`**.
 
 ```bash
