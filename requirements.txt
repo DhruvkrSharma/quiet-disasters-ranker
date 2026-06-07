@@ -1,0 +1,15 @@
+# Redrob AI Candidate Ranking System v15
+# Core dependencies
+sentence-transformers>=2.2.0
+numpy>=1.24.0
+pandas>=1.5.0
+pyarrow>=10.0.0
+faiss-cpu>=1.7.0
+
+# Transitive (pinned for reproducibility)
+torch>=2.0.0
+transformers>=4.30.0
+scikit-learn>=1.2.0
+
+# Sandbox / HF Spaces UI
+streamlit>=1.20.0

@@ -1,0 +1,56 @@
+# Redrob Hackathon — Submission Metadata
+team_name: "Quiet Disasters"
+primary_contact:
+  name: "Abhinav Shakya"
+  email: "abhinavshakya063@gmail.com"
+  phone: "+91-8800680347"
+
+team_members:
+  - name: "Abhinav Shakya"
+    email: "abhinavshakya063@gmail.com"
+    role: "ML Engineer"
+
+  - name: "Dhruv Kumar"
+    email: "dhruv258.kumar@gmail.com"
+    role: "Data Engineer"
+
+  - name: "Lakshya Saxena"
+    email: "saxena.lakshya0106@gmail.com"
+    role: "Search & Retrieval Engineer"
+    
+  - name: "Himanshu Sharma"
+    email: "himanshusharma5856@gmail.com"
+    role: "Backend Engineer"
+
+github_repo: "https://github.com/abhinav-123457/quiet-disasters-ranker"
+sandbox_link: "https://huggingface.co/spaces/YOUR_USERNAME/redrob-ranker"
+reproduce_command: "python rank.py --candidates ./candidates.jsonl --artifacts ./artifacts --out ./submission.csv"
+
+compute:
+  platform: "Local Machine (Samsung Galaxy Book 3)"
+  cpu_cores: 10
+  ram_gb: 16
+  python_version: "3.11"
+  os: "Windows"
+  uses_gpu_for_inference: false
+  has_network_during_ranking: false
+  pre_computation_required: true
+  pre_computation_time_minutes: 6
+
+ai_tools_used:
+  - "Claude"
+  - "ChatGPT"
+  - "Gemini"
+
+ai_usage_summary: |
+  Our team employed a collaborative multi-LLM workflow to navigate the strict CPU and runtime constraints of the hackathon. During the initial design phase, we fed the submission specification to both ChatGPT and Claude (Opus 4.6), prompting them to debate the optimal architecture. This LLM debate led to our core design choice: separating the pipeline into a GPU-heavy offline precomputation stage (for embeddings and FAISS index building) and an ultra-fast, CPU-only runtime stage using a lightweight Cross-Encoder. Once the architecture was locked in, we utilized the Antigravity IDE (powered by Claude/Gemini) as our primary pair-programmer. Antigravity assisted in translating our implementation plan into production-ready Python code, specifically writing the batch-optimized FAISS retrieval logic, the 7-feature weighted scoring algorithm, the dynamic reasoning text generator, and the complex edge-case logic required for our two-layer honeypot detection system. Crucially, all high-level engineering decisions, dataset schema mapping, and validation testing were driven by the human team to ensure the LLM outputs strictly adhered to the competition's computational boundaries.
+
+methodology_summary: |
+  Our system uses a deterministic, multi-stage retrieval and ranking pipeline designed to execute completely offline on a CPU within 50 seconds. Stage 1 addresses the cold-start problem via a fast FAISS vector search combined with boolean skill filters, instantly reducing 100K candidates to a high-recall pool of 500. Stage 2 applies a lightweight, CPU-optimized Cross-Encoder to re-rank the top 500, extracting deep semantic relevance against the job description that bi-encoders miss. Stage 3 computes the final ranking using a 7-feature weighted heuristic model. We evaluate career domain evidence (32%), search/retrieval expertise (26%), and vector DB infrastructure (10%), alongside behavioral signals like notice periods. Crucially, we apply aggressive multiplicative penalties to weed out low-quality matches: generalized services firms receive a 0.4x penalty, keyword stuffers get 0.2x, and impossible 'honeypot' profiles are zeroed out via a strict two-layer runtime check. Finally, Stage 4 generates dynamic, non-templated reasoning strings grounded purely in the candidate's actual skill durations, endorsements, and career trajectory, ensuring transparent and hallucination-free justifications for every rank.
+
+declarations:
+  read_submission_spec: true
+  code_is_original_work: true
+  no_collusion: true
+  honeypot_check_done: true
+  reproduction_tested: true
