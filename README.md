@@ -1,4 +1,4 @@
-# Redrob AI Candidate Ranking System — Team Quiet Disasters
+# AI Candidate Ranking System — Team Quiet Disasters
 
 **HuggingFace Sandbox (Live Demo):** [https://huggingface.co/spaces/Abhii2005/Quiet-Disasters-Ranker](https://huggingface.co/spaces/Abhii2005/Quiet-Disasters-Ranker)
 
