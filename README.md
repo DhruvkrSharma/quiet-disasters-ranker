@@ -116,6 +116,6 @@ We implemented a strict, two-layer honeypot detection system to ensure no imposs
 ## 🧪 HuggingFace Spaces Sandbox
 
 As required by Section 10.5 of the spec, a working sandbox demonstrating our ranking system on a small sample can be accessed here:
-**[HuggingFace Spaces Sandbox](https://huggingface.co/spaces/YOUR_USERNAME/redrob-ranker)** *(Update with real link)*
+**[HuggingFace Spaces Sandbox](https://huggingface.co/spaces/Abhii2005/Quiet-Disasters-Ranker)**
 
 The sandbox executes the exact `rank.py` logic against the precomputed artifacts in a Streamlit container, proving that our CPU-only heuristic approach executes cleanly, deterministically, and rapidly.
