@@ -1,5 +1,7 @@
 # Redrob AI Candidate Ranking System — Team Quiet Disasters
 
+**HuggingFace Sandbox (Live Demo):** [https://huggingface.co/spaces/Abhii2005/Quiet-Disasters-Ranker](https://huggingface.co/spaces/Abhii2005/Quiet-Disasters-Ranker)
+
 This repository contains the full source code, dependencies, and execution instructions for our submission to the Redrob AI Candidate Ranking Hackathon.
 
 Our solution is a highly optimized, multi-stage retrieval and ranking pipeline designed specifically to meet the strict computational boundaries of the competition (CPU-only, no network, <5 minutes).
