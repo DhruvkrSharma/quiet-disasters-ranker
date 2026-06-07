@@ -17,15 +17,23 @@ It runs the CPU-only `rank.py` script on precomputed artifacts to rank the top 1
 - No network calls to external LLMs 🔌
 """)
 
-uploaded_file = st.file_uploader("Upload candidates.jsonl (Optional: Sandbox is pre-loaded with full dataset)", type=["jsonl"])
+uploaded_file = st.file_uploader("Upload Candidates Sample (.jsonl or .json)", type=["jsonl", "json"])
 
 if uploaded_file is not None:
     # Save the uploaded file so rank.py can see it if it checks
     with open("./candidates.jsonl", "wb") as f:
         f.write(uploaded_file.getbuffer())
-    st.success("File uploaded successfully! Ready to rank.")
+    st.success("✅ File uploaded successfully! Ready to rank.")
 
-if st.button("🚀 Run Ranking Pipeline", type="primary"):
+col1, col2 = st.columns(2)
+
+with col1:
+    run_uploaded = st.button("🚀 Run on Uploaded Sample", type="primary", disabled=(uploaded_file is None), use_container_width=True)
+
+with col2:
+    run_preloaded = st.button("⚡ Run on Pre-loaded 100K Dataset", type="secondary", use_container_width=True)
+
+if run_uploaded or run_preloaded:
     if not os.path.exists("./artifacts"):
         st.error("Artifacts folder not found! Please ensure precomputed artifacts are uploaded to the Space.")
     else:
