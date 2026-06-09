@@ -20,10 +20,10 @@ team_members:
     
   - name: "Himanshu Sharma"
     email: "himanshusharma5856@gmail.com"
-    role: "Streamlit UI"
+    role: "Backend Engineer"
 
 github_repo: "https://github.com/abhinav-123457/quiet-disasters-ranker"
-sandbox_link: "https://huggingface.co/spaces/Abhii2005/Quiet-Disasters-Ranker"
+sandbox_link: "https://huggingface.co/spaces/YOUR_USERNAME/redrob-ranker"
 reproduce_command: "python rank.py --candidates ./candidates.jsonl --artifacts ./artifacts --out ./submission.csv"
 
 compute:

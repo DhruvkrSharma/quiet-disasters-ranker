@@ -1,0 +1,1857 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta http-equiv="content-type" content="text/html; charset=utf-8"/>
+	<title></title>
+	<meta name="generator" content="LibreOffice 26.2.3.2 (Linux)"/>
+	<meta name="created" content="00:00:00"/>
+	<meta name="changed" content="00:00:00"/>
+	<style type="text/css">
+		@page { size: 8.27in 11.69in; margin: 0.79in }
+		p { margin-bottom: 0.1in; line-height: 115%; background: transparent }
+		h1 { margin-bottom: 0.08in; background: transparent; page-break-after: avoid }
+		h1.western { font-weight: bold; font-size: 18pt; font-family: "Liberation Sans", sans-serif }
+		h1.cjk { font-weight: bold; font-size: 18pt; font-family: "AR PL SungtiL GB" }
+		h1.ctl { font-weight: bold; font-family: "Noto Sans Devanagari"; font-size: 18pt }
+		h2 { margin-top: 0.14in; margin-bottom: 0.08in; background: transparent; page-break-after: avoid }
+		h2.western { font-weight: bold; font-size: 16pt; font-family: "Liberation Sans", sans-serif }
+		h2.cjk { font-weight: bold; font-size: 16pt; font-family: "AR PL SungtiL GB" }
+		h2.ctl { font-weight: bold; font-family: "Noto Sans Devanagari"; font-size: 16pt }
+		pre { font-size: 10pt; font-family: "Liberation Mono", monospace; background: transparent }
+		h3 { margin-top: 0.1in; margin-bottom: 0.08in; background: transparent; page-break-after: avoid }
+		h3.western { font-weight: bold; font-size: 14pt; font-family: "Liberation Sans", sans-serif }
+		h3.cjk { font-weight: bold; font-size: 14pt; font-family: "AR PL SungtiL GB" }
+		h3.ctl { font-weight: bold; font-family: "Noto Sans Devanagari"; font-size: 14pt }
+		td p { widows: 0; orphans: 0; background: transparent }
+		th p { widows: 0; text-align: center; orphans: 0; font-weight: bold; background: transparent }
+	</style>
+</head>
+<body lang="en-US" link="#000080" vlink="#800000" dir="ltr"><h1 class="western">
+Redrob AI Candidate Ranking System — v15 FINAL</h1>
+<p>Fully self-contained. Every function defined. No cross-references.
+Ready to code.</p>
+<hr/>
+
+<h2 class="western">1. Architecture</h2>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1">PRE-COMPUTATION (Colab T4 GPU, ~22 min)<br/>
+  ├── Save bi-encoder + cross-encoder locally<br/>
+  ├── Normalize + encode 100K candidates → float16<br/>
+  ├── Build FAISS IndexFlatIP<br/>
+  ├── Deduplicate + normalize + encode ~10K skill names<br/>
+  ├── Pre-compute skill matches → pickle dict<br/>
+  ├── Pre-compute archetype max scores → npy<br/>
+  ├── Save candidate_order.npy<br/>
+  ├── Metadata → parquet (flat) + pickle (nested)<br/>
+<br/>
+RANKING (≤5 min, CPU, 16GB, no network)<br/>
+  ├── Load + assert alignment + cast float32 + vectorize semantics<br/>
+  ├── STAGE 1: FAISS Union → ~3500 → hard-exclude → top 500<br/>
+  ├── STAGE 2: Cross-encoder on 500 (sigmoid normalized)<br/>
+  ├── STAGE 3: 7-Feature scoring → top 100<br/>
+  └── STAGE 4: Data-driven reasoning → CSV</pre>
+<hr/>
+
+<h2 class="western">2. Pre-Computation</h2>
+<h3 class="western">2.1 Models</h3>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1">from sentence_transformers import SentenceTransformer, CrossEncoder<br/>
+<br/>
+bi_model = SentenceTransformer('all-MiniLM-L6-v2', device='cuda')<br/>
+bi_model.save('artifacts/models/bi/')<br/>
+<br/>
+ce_model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', device='cuda')<br/>
+ce_model.save('artifacts/models/ce/')</pre><h3 class="western">
+2.2 JD Queries (5)</h3>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1">JD_QUERIES = [<br/>
+    &quot;search ranking recommendation retrieval systems deployed production users matching relevance discovery personalization&quot;,<br/>
+    &quot;embeddings vector database FAISS Milvus Pinecone Weaviate Qdrant hybrid search dense retrieval infrastructure&quot;,<br/>
+    &quot;shipped production deployed real users scale serving latency real-time traffic API microservice&quot;,<br/>
+    &quot;python pytorch machine learning engineering evaluation NDCG MRR A/B testing code quality&quot;,<br/>
+    &quot;LLM fine-tuning LoRA transformers learning to rank XGBoost distributed systems&quot;,<br/>
+]<br/>
+jd_query_embeds = bi_model.encode(JD_QUERIES, normalize_embeddings=True)<br/>
+np.save(&quot;artifacts/jd_query_embeddings.npy&quot;, jd_query_embeds.astype(np.float32))</pre><h3 class="western">
+2.3 JD Skill Requirements (20)</h3>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1">JD_SKILLS = [<br/>
+    # MUST-HAVE (0-9)<br/>
+    &quot;embeddings-based retrieval and semantic search&quot;,<br/>
+    &quot;vector databases and approximate nearest neighbor search&quot;,<br/>
+    &quot;natural language processing and text understanding&quot;,<br/>
+    &quot;ranking systems and relevance scoring&quot;,<br/>
+    &quot;search systems and information retrieval&quot;,<br/>
+    &quot;recommendation systems and collaborative filtering&quot;,<br/>
+    &quot;Python production-quality code&quot;,<br/>
+    &quot;PyTorch or TensorFlow deep learning frameworks&quot;,<br/>
+    &quot;evaluation frameworks NDCG MRR MAP precision recall&quot;,<br/>
+    &quot;machine learning model deployment and serving&quot;,<br/>
+    # NICE-TO-HAVE (10-19)<br/>
+    &quot;LLM fine-tuning LoRA QLoRA PEFT&quot;,<br/>
+    &quot;learning to rank XGBoost LightGBM gradient boosting&quot;,<br/>
+    &quot;distributed systems and large-scale data processing&quot;,<br/>
+    &quot;Docker Kubernetes containerized ML deployment&quot;,<br/>
+    &quot;MLOps MLflow Airflow experiment tracking&quot;,<br/>
+    &quot;Elasticsearch OpenSearch Solr search infrastructure&quot;,<br/>
+    &quot;data pipelines ETL feature engineering&quot;,<br/>
+    &quot;cloud platforms AWS GCP Azure SageMaker&quot;,<br/>
+    &quot;API design REST FastAPI microservices&quot;,<br/>
+    &quot;HR-tech recruiting technology talent marketplace&quot;,<br/>
+]<br/>
+jd_skill_embeds = bi_model.encode(JD_SKILLS, normalize_embeddings=True)<br/>
+np.save(&quot;artifacts/jd_skill_embeddings.npy&quot;, jd_skill_embeds.astype(np.float32))</pre><h3 class="western">
+2.4 Archetypes (10)</h3>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1">ARCHETYPES = [<br/>
+    &quot;Search engineer who built and deployed search systems with ranking and relevance optimization&quot;,<br/>
+    &quot;Recommendation systems engineer who built collaborative filtering and content-based recommendation engines&quot;,<br/>
+    &quot;Retrieval engineer working on dense retrieval, semantic search, and embedding-based document matching&quot;,<br/>
+    &quot;Matching engineer who built candidate-job matching or marketplace matching systems using ML&quot;,<br/>
+    &quot;Ranking engineer who implemented learning-to-rank models and evaluation frameworks&quot;,<br/>
+    &quot;NLP engineer who built information retrieval and text understanding systems for production use&quot;,<br/>
+    &quot;Talent discovery engineer who built systems to find and rank candidates for recruiting platforms&quot;,<br/>
+    &quot;ML platform engineer who built and maintained embedding pipelines and vector search infrastructure&quot;,<br/>
+    &quot;Applied scientist who shipped ranking models and recommendation algorithms to real users&quot;,<br/>
+    &quot;Data scientist focused on search relevance, query understanding, and retrieval quality metrics&quot;,<br/>
+]<br/>
+arch_embeds = bi_model.encode(ARCHETYPES, normalize_embeddings=True)<br/>
+np.save(&quot;artifacts/archetype_embeddings.npy&quot;, arch_embeds.astype(np.float32))</pre><h3 class="western">
+2.5 Candidate Embeddings (pre-normalized float16)</h3>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1">import json, re<br/>
+<br/>
+ordered_candidates = []<br/>
+all_embeddings = []<br/>
+<br/>
+for line in open(&quot;candidates.jsonl&quot;):<br/>
+    candidate = json.loads(line)<br/>
+    ordered_candidates.append(candidate)<br/>
+<br/>
+    # STRUCTURED TEXT — section labels improve embedding quality<br/>
+    # Skills listed first and labeled get proper emphasis in 384-d space<br/>
+    skills_text = &quot;, &quot;.join(s.get(&quot;name&quot;, &quot;&quot;) for s in candidate.get(&quot;skills&quot;, []))<br/>
+    career_text = &quot; &quot;.join(<br/>
+        (r.get(&quot;description&quot;, &quot;&quot;) or &quot;&quot;) for r in candidate.get(&quot;career_history&quot;, [])<br/>
+    )<br/>
+    summary_text = candidate.get(&quot;profile&quot;, {}).get(&quot;summary&quot;, &quot;&quot;) or &quot;&quot;<br/>
+<br/>
+    profile_text = (<br/>
+        f&quot;Skills: {skills_text}. &quot;<br/>
+        f&quot;Experience: {career_text} &quot;<br/>
+        f&quot;Summary: {summary_text}&quot;<br/>
+    )<br/>
+    emb = bi_model.encode(profile_text, normalize_embeddings=True)<br/>
+    all_embeddings.append(emb)<br/>
+<br/>
+embeddings = np.array(all_embeddings, dtype=np.float16)<br/>
+np.save(&quot;artifacts/candidate_embeddings.npy&quot;, embeddings)<br/>
+<br/>
+candidate_ids = np.array([c[&quot;candidate_id&quot;] for c in ordered_candidates])<br/>
+np.save(&quot;artifacts/candidate_order.npy&quot;, candidate_ids)</pre><h3 class="western">
+2.6 FAISS Index</h3>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1">import faiss<br/>
+emb_f32 = embeddings.astype(np.float32)<br/>
+index = faiss.IndexFlatIP(384)<br/>
+index.add(emb_f32)<br/>
+faiss.write_index(index, &quot;artifacts/candidate.index&quot;)</pre><h3 class="western">
+2.7 Archetype Max Scores</h3>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1"># VECTORIZED — single matmul instead of 100K Python loop<br/>
+archetype_max = np.max(emb_f32 @ arch_embeds.T, axis=1).astype(np.float16)<br/>
+np.save(&quot;artifacts/archetype_max_scores.npy&quot;, archetype_max)</pre><h3 class="western">
+2.8 Skill Normalization + Deduplication + Matching</h3>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1">def normalize_skill_name(name):<br/>
+    name = name.lower().strip()<br/>
+    name = re.sub(r'[-_/]', ' ', name)<br/>
+    name = re.sub(r'\s+', ' ', name)<br/>
+    aliases = {<br/>
+        &quot;torch&quot;: &quot;pytorch&quot;, &quot;py torch&quot;: &quot;pytorch&quot;,<br/>
+        &quot;tf&quot;: &quot;tensorflow&quot;, &quot;tensor flow&quot;: &quot;tensorflow&quot;,<br/>
+        &quot;scikit learn&quot;: &quot;sklearn&quot;, &quot;sci kit learn&quot;: &quot;sklearn&quot;,<br/>
+        &quot;elastic search&quot;: &quot;elasticsearch&quot;,<br/>
+        &quot;open search&quot;: &quot;opensearch&quot;,<br/>
+        &quot;amazon web services&quot;: &quot;aws&quot;,<br/>
+        &quot;google cloud platform&quot;: &quot;gcp&quot;, &quot;google cloud&quot;: &quot;gcp&quot;,<br/>
+        &quot;microsoft azure&quot;: &quot;azure&quot;,<br/>
+        &quot;hf transformers&quot;: &quot;transformers&quot;,<br/>
+        &quot;huggingface&quot;: &quot;transformers&quot;, &quot;hugging face&quot;: &quot;transformers&quot;,<br/>
+    }<br/>
+    return aliases.get(name, name)<br/>
+<br/>
+# Collect unique normalized names<br/>
+all_names = set()<br/>
+for c in ordered_candidates:<br/>
+    for s in c.get(&quot;skills&quot;, []):<br/>
+        all_names.add(normalize_skill_name(s.get(&quot;name&quot;, &quot;&quot;)))<br/>
+unique_names = sorted(all_names - {&quot;&quot;})<br/>
+<br/>
+# Encode unique names ONCE<br/>
+unique_embeds = bi_model.encode(unique_names, batch_size=256,<br/>
+                                normalize_embeddings=True)<br/>
+skill_embed_map = dict(zip(unique_names, unique_embeds))<br/>
+<br/>
+# Build skill_lookup: candidate_id → list of match dicts<br/>
+import pickle<br/>
+from sklearn.metrics.pairwise import cosine_similarity<br/>
+<br/>
+skill_lookup = {}<br/>
+for c in ordered_candidates:<br/>
+    cid = c[&quot;candidate_id&quot;]<br/>
+    matches = []<br/>
+    for s in c.get(&quot;skills&quot;, []):<br/>
+        norm = normalize_skill_name(s.get(&quot;name&quot;, &quot;&quot;))<br/>
+        if norm not in skill_embed_map:<br/>
+            continue<br/>
+        se = skill_embed_map[norm]<br/>
+        sims = se @ jd_skill_embeds.T  # (20,) dot = cosine<br/>
+        best_idx = int(np.argmax(sims))<br/>
+        best_score = float(sims[best_idx])<br/>
+        matches.append({<br/>
+            &quot;skill_name&quot;: s.get(&quot;name&quot;, &quot;&quot;),<br/>
+            &quot;norm_name&quot;: norm,<br/>
+            &quot;best_jd_match_score&quot;: best_score,<br/>
+            &quot;best_jd_req_idx&quot;: best_idx,<br/>
+            &quot;proficiency&quot;: s.get(&quot;proficiency&quot;, &quot;intermediate&quot;),<br/>
+            &quot;endorsements&quot;: s.get(&quot;endorsements&quot;, 0),<br/>
+            &quot;duration_months&quot;: s.get(&quot;duration_months&quot;, 0),<br/>
+        })<br/>
+    skill_lookup[cid] = matches<br/>
+<br/>
+pickle.dump(skill_lookup, open(&quot;artifacts/skill_matches.pkl&quot;, &quot;wb&quot;))</pre><h3 class="western">
+2.9 Skill Threshold Calibration Test</h3>
+<p>Run this during precompute to verify the 0.50 threshold is
+appropriate:</p>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1"># --- CALIBRATION — verify threshold before committing ---<br/>
+test_skills = [<br/>
+    &quot;pytorch&quot;, &quot;faiss&quot;, &quot;elasticsearch&quot;, &quot;embeddings&quot;,<br/>
+    &quot;recommendation systems&quot;, &quot;python&quot;, &quot;docker&quot;, &quot;kubernetes&quot;,<br/>
+    &quot;natural language processing&quot;, &quot;transformers&quot;,<br/>
+]<br/>
+test_embeds = bi_model.encode(test_skills, normalize_embeddings=True)<br/>
+print(&quot;\n=== SKILL THRESHOLD CALIBRATION ===&quot;)<br/>
+for name, emb in zip(test_skills, test_embeds):<br/>
+    sims = emb @ jd_skill_embeds.T<br/>
+    best_idx = int(np.argmax(sims))<br/>
+    best_score = float(sims[best_idx])<br/>
+    print(f&quot;  {name:30s} -&gt; JD[{best_idx:2d}] = {best_score:.3f}  &quot;<br/>
+          f&quot;({'PASS' if best_score &gt; 0.50 else 'BELOW THRESHOLD'})&quot;)<br/>
+<br/>
+# If any obviously relevant skill scores below 0.50, lower threshold to 0.45<br/>
+# Update SKILL_MATCH_THRESHOLD accordingly<br/>
+SKILL_MATCH_THRESHOLD = 0.50  # adjust based on calibration output<br/>
+np.save(&quot;artifacts/skill_threshold.npy&quot;, np.array([SKILL_MATCH_THRESHOLD]))<br/>
+print(f&quot;\nUsing threshold: {SKILL_MATCH_THRESHOLD}&quot;)</pre><h3 class="western">
+2.10 Metadata Extraction</h3>
+<p><b>Parquet (flat):</b></p>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1">import pandas as pd<br/>
+<br/>
+flat = []<br/>
+for c in ordered_candidates:<br/>
+    p = c.get(&quot;profile&quot;, {})<br/>
+    s = c.get(&quot;redrob_signals&quot;, {})<br/>
+    flat.append({<br/>
+        &quot;candidate_id&quot;: c[&quot;candidate_id&quot;],<br/>
+        &quot;current_title&quot;: p.get(&quot;current_title&quot;, &quot;&quot;),<br/>
+        &quot;years_of_experience&quot;: p.get(&quot;years_of_experience&quot;, 0),<br/>
+        &quot;location&quot;: p.get(&quot;location&quot;, &quot;&quot;),<br/>
+        &quot;country&quot;: p.get(&quot;country&quot;, &quot;&quot;),<br/>
+        &quot;summary&quot;: p.get(&quot;summary&quot;, &quot;&quot;),<br/>
+        &quot;response_rate&quot;: s.get(&quot;recruiter_response_rate&quot;, 0.5),<br/>
+        &quot;last_active_date&quot;: s.get(&quot;last_active_date&quot;, &quot;&quot;),<br/>
+        &quot;notice_period_days&quot;: s.get(&quot;notice_period_days&quot;, 90),<br/>
+        &quot;open_to_work&quot;: s.get(&quot;open_to_work_flag&quot;, False),<br/>
+        &quot;avg_response_time_hours&quot;: s.get(&quot;avg_response_time_hours&quot;, 72),<br/>
+        &quot;interview_completion_rate&quot;: s.get(&quot;interview_completion_rate&quot;, 0.5),<br/>
+        &quot;github_activity_score&quot;: s.get(&quot;github_activity_score&quot;, -1),<br/>
+        &quot;verified_email&quot;: s.get(&quot;verified_email&quot;, False),<br/>
+        &quot;verified_phone&quot;: s.get(&quot;verified_phone&quot;, False),<br/>
+        &quot;linkedin_connected&quot;: s.get(&quot;linkedin_connected&quot;, False),<br/>
+        &quot;profile_completeness_score&quot;: s.get(&quot;profile_completeness_score&quot;, 50),<br/>
+        &quot;saved_by_recruiters_30d&quot;: s.get(&quot;saved_by_recruiters_30d&quot;, 0),<br/>
+        &quot;preferred_work_mode&quot;: s.get(&quot;preferred_work_mode&quot;, &quot;hybrid&quot;),<br/>
+        &quot;willing_to_relocate&quot;: s.get(&quot;willing_to_relocate&quot;, False),<br/>
+    })<br/>
+pd.DataFrame(flat).to_parquet(&quot;artifacts/candidates_flat.parquet&quot;)</pre><p>
+<b>Pickle (nested):</b></p>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1">nested_data = {}<br/>
+for c in ordered_candidates:<br/>
+    cid = c[&quot;candidate_id&quot;]<br/>
+    career = c.get(&quot;career_history&quot;, [])<br/>
+    nested_data[cid] = {<br/>
+        &quot;career_history&quot;: career,<br/>
+        &quot;career_text&quot;: &quot; &quot;.join((r.get(&quot;description&quot;, &quot;&quot;) or &quot;&quot;) for r in career),<br/>
+        &quot;career_companies&quot;: [r.get(&quot;company&quot;, &quot;&quot;) for r in career],<br/>
+        &quot;education&quot;: c.get(&quot;education&quot;, []),<br/>
+        &quot;skill_names&quot;: [s.get(&quot;name&quot;, &quot;&quot;) for s in c.get(&quot;skills&quot;, [])],<br/>
+        &quot;skill_assessment_scores&quot;: c.get(&quot;redrob_signals&quot;, {})<br/>
+                                    .get(&quot;skill_assessment_scores&quot;, {}),<br/>
+    }<br/>
+pickle.dump(nested_data, open(&quot;artifacts/candidates_nested.pkl&quot;, &quot;wb&quot;))</pre><h3 class="western">
+2.11 Honeypot Pre-Detection</h3>
+<p>Run honeypot checks during precompute to avoid repeated
+<font face="Liberation Mono, monospace">datetime.strptime()</font>
+parsing at ranking time (~3500 calls eliminated):</p>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1">from datetime import datetime<br/>
+<br/>
+def precompute_honeypot_flags(ordered_candidates, skill_lookup):<br/>
+    &quot;&quot;&quot;<br/>
+    Tiered honeypot detection. Returns dict with two sets:<br/>
+    - 'hard': suspicion &gt;= 3 → hard exclude (clearly fraudulent)<br/>
+    - 'soft': suspicion == 2 → ×0.50 penalty (possibly messy data)<br/>
+    False negatives (losing good candidates) hurt more than false positives.<br/>
+    &quot;&quot;&quot;<br/>
+    hard_exclude = set()<br/>
+    soft_penalize = set()<br/>
+    for c in ordered_candidates:<br/>
+        cid = c[&quot;candidate_id&quot;]<br/>
+        career = c.get(&quot;career_history&quot;, [])<br/>
+        skills = skill_lookup.get(cid, [])<br/>
+        suspicion = 0<br/>
+<br/>
+        # Check 1: impossible skill claims (5+ expert, 3+ zero duration)<br/>
+        experts = [s for s in skills if s[&quot;proficiency&quot;] == &quot;expert&quot;]<br/>
+        zero_dur = [s for s in experts if s[&quot;duration_months&quot;] == 0]<br/>
+        if len(experts) &gt;= 5 and len(zero_dur) &gt;= 3:<br/>
+            suspicion += 1<br/>
+<br/>
+        # Check 2: timeline mismatch (any role &gt;12 month discrepancy)<br/>
+        for role in career:<br/>
+            sd = role.get(&quot;start_date&quot;)<br/>
+            ed = role.get(&quot;end_date&quot;)<br/>
+            dm = role.get(&quot;duration_months&quot;, 0)<br/>
+            if sd and ed and dm:<br/>
+                try:<br/>
+                    s_dt = datetime.strptime(str(sd)[:10], &quot;%Y-%m-%d&quot;)<br/>
+                    e_dt = datetime.strptime(str(ed)[:10], &quot;%Y-%m-%d&quot;)<br/>
+                    actual = (e_dt.year - s_dt.year) * 12 + (e_dt.month - s_dt.month)<br/>
+                    if abs(actual - dm) &gt; 12:<br/>
+                        suspicion += 1<br/>
+                        break<br/>
+                except (ValueError, TypeError):<br/>
+                    pass<br/>
+<br/>
+        # Check 3: experience inflation<br/>
+        p = c.get(&quot;profile&quot;, {})<br/>
+        total_career = sum(r.get(&quot;duration_months&quot;, 0) for r in career)<br/>
+        stated = p.get(&quot;years_of_experience&quot;, 0)<br/>
+        if stated * 12 &gt; total_career * 1.5 + 24:<br/>
+            suspicion += 1<br/>
+<br/>
+        if suspicion &gt;= 3:<br/>
+            hard_exclude.add(cid)<br/>
+        elif suspicion == 2:<br/>
+            soft_penalize.add(cid)<br/>
+<br/>
+    logging.info(f&quot;Honeypot: {len(hard_exclude)} hard-excluded, &quot;<br/>
+                 f&quot;{len(soft_penalize)} soft-penalized&quot;)<br/>
+    return {'hard': hard_exclude, 'soft': soft_penalize}<br/>
+<br/>
+honeypot_data = precompute_honeypot_flags(ordered_candidates, skill_lookup)<br/>
+pickle.dump(honeypot_data, open(&quot;artifacts/honeypot_flags.pkl&quot;, &quot;wb&quot;))</pre><h3 class="western">
+2.12 Artifact Budget</h3>
+<table width="100%" cellpadding="4" cellspacing="0">
+	<col width="128*"/>
+	<col width="128*"/>
+	<thead>
+		<tr valign="top">
+			<th width="50%" style="border-top: 1px solid #000000; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0.04in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Artifact</p>
+			</th>
+			<th width="50%" style="border: 1px solid #000000; padding: 0.04in"><p align="left">
+				Size</p>
+			</th>
+		</tr>
+	</thead>
+	<tbody>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				models/bi/ + models/ce/</p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p align="left">
+				~160MB</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				candidate_embeddings.npy</p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p align="left">
+				~77MB</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				candidate.index</p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p align="left">
+				~150MB</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				candidate_order.npy</p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p align="left">
+				&lt;1MB</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				archetype_max_scores.npy</p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p align="left">
+				&lt;1MB</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				jd_*.npy, archetype_embeddings.npy</p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p align="left">
+				&lt;100KB</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				skill_matches.pkl</p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p align="left">
+				~50MB</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				candidates_flat.parquet</p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p align="left">
+				~200MB</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				candidates_nested.pkl</p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p align="left">
+				~400MB</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				honeypot_flags.pkl</p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p align="left">
+				&lt;1KB</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				skill_threshold.npy</p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p align="left">
+				&lt;1KB</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p>
+				<b>Total</b></p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<b>~1.1GB</b></p>
+			</td>
+		</tr>
+	</tbody>
+</table>
+<p><br/>
+<br/>
+
+</p>
+<hr/>
+
+<h2 class="western">3. Ranking — Complete Implementation</h2>
+<h3 class="western">3.1 Constants</h3>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1"># --- KEYWORD LISTS ---<br/>
+<br/>
+STRONG_KEYWORDS = [<br/>
+    &quot;ranking system&quot;, &quot;ranking engine&quot;, &quot;ranking model&quot;, &quot;ranking pipeline&quot;,<br/>
+    &quot;search system&quot;, &quot;search engine&quot;, &quot;search platform&quot;, &quot;search quality&quot;,<br/>
+    &quot;recommendation system&quot;, &quot;recommendation engine&quot;, &quot;recommender&quot;,<br/>
+    &quot;retrieval system&quot;, &quot;retrieval pipeline&quot;, &quot;information retrieval&quot;,<br/>
+    &quot;matching system&quot;, &quot;matching engine&quot;, &quot;candidate matching&quot;,<br/>
+    &quot;job matching&quot;, &quot;talent matching&quot;, &quot;relevance&quot;,<br/>
+    &quot;discovery platform&quot;, &quot;personalization engine&quot;,<br/>
+    &quot;reranking&quot;, &quot;re-ranking&quot;, &quot;query understanding&quot;,<br/>
+    &quot;learning to rank&quot;,<br/>
+]<br/>
+<br/>
+MODERATE_KEYWORDS = [<br/>
+    &quot;embeddings&quot;, &quot;vector search&quot;, &quot;dense retrieval&quot;, &quot;semantic search&quot;,<br/>
+    &quot;hybrid search&quot;, &quot;neural search&quot;, &quot;bm25&quot;, &quot;inverted index&quot;,<br/>
+    &quot;ndcg&quot;, &quot;mrr&quot;, &quot;a/b test&quot;, &quot;offline evaluation&quot;,<br/>
+    &quot;faiss&quot;, &quot;pinecone&quot;, &quot;milvus&quot;, &quot;qdrant&quot;, &quot;weaviate&quot;,<br/>
+    &quot;elasticsearch&quot;, &quot;opensearch&quot;, &quot;solr&quot;,<br/>
+]<br/>
+<br/>
+DEPLOYMENT_KEYWORDS = [<br/>
+    &quot;deployed to production&quot;, &quot;shipped to production&quot;, &quot;production system&quot;,<br/>
+    &quot;production environment&quot;, &quot;real-time serving&quot;, &quot;model serving&quot;,<br/>
+    &quot;live traffic&quot;, &quot;production traffic&quot;, &quot;launched&quot;, &quot;went live&quot;,<br/>
+    &quot;serving users&quot;, &quot;serving customers&quot;,<br/>
+]<br/>
+<br/>
+SCALE_KEYWORDS = [<br/>
+    &quot;at scale&quot;, &quot;millions&quot;, &quot;thousands of users&quot;, &quot;daily active&quot;,<br/>
+    &quot;throughput&quot;, &quot;latency&quot;, &quot;sla&quot;, &quot;high availability&quot;,<br/>
+]<br/>
+<br/>
+PRODUCT_ENG_KEYWORDS = [<br/>
+    &quot;api&quot;, &quot;microservice&quot;, &quot;endpoint&quot;, &quot;ci/cd&quot;, &quot;monitoring&quot;, &quot;alerting&quot;,<br/>
+]<br/>
+<br/>
+ANTI_PRODUCTION_KEYWORDS = [<br/>
+    &quot;research only&quot;, &quot;thesis&quot;, &quot;proof of concept&quot;,<br/>
+    &quot;prototype only&quot;, &quot;academic project&quot;,<br/>
+]<br/>
+<br/>
+VECTOR_TOOLS = [<br/>
+    &quot;pinecone&quot;, &quot;weaviate&quot;, &quot;qdrant&quot;, &quot;milvus&quot;, &quot;faiss&quot;,<br/>
+    &quot;opensearch&quot;, &quot;elasticsearch&quot;, &quot;chroma&quot;, &quot;chromadb&quot;,<br/>
+    &quot;annoy&quot;, &quot;scann&quot;, &quot;vespa&quot;, &quot;solr&quot;, &quot;lucene&quot;, &quot;pgvector&quot;,<br/>
+]<br/>
+<br/>
+VECTOR_SEARCH_JD_INDICES = {1, 15}<br/>
+<br/>
+SERVICES_FIRMS = [<br/>
+    &quot;tcs&quot;, &quot;tata consultancy&quot;, &quot;infosys&quot;, &quot;wipro&quot;, &quot;accenture&quot;,<br/>
+    &quot;cognizant&quot;, &quot;capgemini&quot;, &quot;hcl&quot;, &quot;tech mahindra&quot;, &quot;mphasis&quot;,<br/>
+    &quot;hexaware&quot;, &quot;mindtree&quot;, &quot;l&amp;t infotech&quot;, &quot;lti&quot;,<br/>
+    &quot;deloitte&quot;, &quot;kpmg&quot;, &quot;ey &quot;, &quot;ernst&quot;, &quot;pwc&quot;,<br/>
+]<br/>
+<br/>
+TIER_A_TITLES = [<br/>
+    &quot;ml engineer&quot;, &quot;machine learning&quot;, &quot;ai engineer&quot;,<br/>
+    &quot;data scientist&quot;, &quot;nlp engineer&quot;, &quot;applied scientist&quot;,<br/>
+    &quot;research engineer&quot;, &quot;deep learning&quot;, &quot;search engineer&quot;,<br/>
+    &quot;recommendation&quot;, &quot;retrieval&quot;,<br/>
+]<br/>
+<br/>
+TIER_B_TITLES = [<br/>
+    &quot;software engineer&quot;, &quot;backend engineer&quot;, &quot;full stack&quot;,<br/>
+    &quot;data engineer&quot;, &quot;analytics engineer&quot;, &quot;platform engineer&quot;,<br/>
+]<br/>
+<br/>
+TIER_C_TITLES = [<br/>
+    &quot;devops&quot;, &quot;cloud engineer&quot;, &quot;sre&quot;, &quot;frontend&quot;,<br/>
+    &quot;qa engineer&quot;, &quot;product manager&quot;,<br/>
+]<br/>
+<br/>
+# Hard-exclude these titles — they cannot be Senior ML Engineers<br/>
+NON_TECH_TITLES = [<br/>
+    &quot;hr manager&quot;, &quot;human resource&quot;, &quot;recruiter&quot;,<br/>
+    &quot;marketing manager&quot;, &quot;sales manager&quot;, &quot;account manager&quot;,<br/>
+    &quot;operations manager&quot;, &quot;accountant&quot;, &quot;finance manager&quot;,<br/>
+    &quot;customer support&quot;, &quot;copywriter&quot;, &quot;graphic designer&quot;,<br/>
+]<br/>
+<br/>
+# But spare titles that contain tech qualifiers<br/>
+TECH_CARVEOUTS = [<br/>
+    &quot;ml&quot;, &quot;ai&quot;, &quot;machine learning&quot;, &quot;data&quot;, &quot;engineer&quot;,<br/>
+    &quot;developer&quot;, &quot;scientist&quot;, &quot;nlp&quot;, &quot;search&quot;, &quot;recommendation&quot;,<br/>
+    &quot;retrieval&quot;, &quot;talent intelligence&quot;, &quot;talent tech&quot;,<br/>
+]<br/>
+<br/>
+PROF_WEIGHTS = {<br/>
+    &quot;expert&quot;: 1.0, &quot;advanced&quot;: 0.85, &quot;intermediate&quot;: 0.60, &quot;beginner&quot;: 0.30<br/>
+}<br/>
+<br/>
+TITLE_LEVELS = {<br/>
+    &quot;intern&quot;: 0, &quot;trainee&quot;: 0,<br/>
+    &quot;junior&quot;: 1, &quot;associate&quot;: 1,<br/>
+    &quot;engineer&quot;: 2, &quot;developer&quot;: 2, &quot;analyst&quot;: 2, &quot;scientist&quot;: 2,<br/>
+    &quot;senior&quot;: 3,<br/>
+    &quot;lead&quot;: 4, &quot;staff&quot;: 4, &quot;principal&quot;: 5,<br/>
+    &quot;manager&quot;: 4, &quot;director&quot;: 5, &quot;head&quot;: 5, &quot;vp&quot;: 6,<br/>
+    &quot;founder&quot;: 5, &quot;co-founder&quot;: 5, &quot;cto&quot;: 6, &quot;ceo&quot;: 6,<br/>
+}<br/>
+<br/>
+JD_CORE = &quot;&quot;&quot;Senior AI Engineer, founding team. Must have shipped<br/>
+ranking, search, or recommendation systems to production.<br/>
+Production experience with embeddings, vector databases, hybrid search.<br/>
+Python, PyTorch, evaluation frameworks. Product company background.<br/>
+5-9 years experience. India preferred, hybrid work.&quot;&quot;&quot;</pre><h3 class="western">
+3.2 Loading + Setup</h3>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1">import numpy as np, pandas as pd, pickle, logging<br/>
+<br/>
+logging.basicConfig(level=logging.INFO)<br/>
+<br/>
+meta_df = pd.read_parquet(&quot;artifacts/candidates_flat.parquet&quot;)<br/>
+nested = pickle.load(open(&quot;artifacts/candidates_nested.pkl&quot;, &quot;rb&quot;))<br/>
+cand_embeds_f16 = np.load(&quot;artifacts/candidate_embeddings.npy&quot;)<br/>
+archetype_max_raw = np.load(&quot;artifacts/archetype_max_scores.npy&quot;)<br/>
+jd_queries = np.load(&quot;artifacts/jd_query_embeddings.npy&quot;)<br/>
+archetypes = np.load(&quot;artifacts/archetype_embeddings.npy&quot;)<br/>
+jd_skills = np.load(&quot;artifacts/jd_skill_embeddings.npy&quot;)<br/>
+skill_lookup = pickle.load(open(&quot;artifacts/skill_matches.pkl&quot;, &quot;rb&quot;))<br/>
+honeypot_data = pickle.load(open(&quot;artifacts/honeypot_flags.pkl&quot;, &quot;rb&quot;))<br/>
+honeypot_hard = honeypot_data['hard']   # suspicion &gt;= 3 → exclude<br/>
+honeypot_soft = honeypot_data['soft']   # suspicion == 2 → ×0.50<br/>
+<br/>
+# ORDERING ASSERTION<br/>
+saved_order = np.load(&quot;artifacts/candidate_order.npy&quot;, allow_pickle=True)<br/>
+assert len(cand_embeds_f16) == len(meta_df), &quot;Embedding/metadata count mismatch&quot;<br/>
+assert np.array_equal(saved_order, meta_df[&quot;candidate_id&quot;].values), \<br/>
+    &quot;Embedding/metadata ordering mismatch!&quot;<br/>
+<br/>
+# CAST FLOAT32 ONCE<br/>
+cand_embeds = cand_embeds_f16.astype(np.float32)<br/>
+<br/>
+# MAP ARCHETYPE MAX: [-1,1] → [0,1]<br/>
+archetype_max = (archetype_max_raw.astype(np.float32) + 1.0) / 2.0<br/>
+<br/>
+# VECTORIZED SEMANTIC: (100K, 5) — all cosine scores at once<br/>
+all_semantic_raw = cand_embeds @ jd_queries.T<br/>
+all_semantic = (all_semantic_raw + 1.0) / 2.0       # map to [0,1]<br/>
+all_semantic_max = all_semantic.max(axis=1)           # best of 5 queries<br/>
+<br/>
+# O(1) LOOKUPS<br/>
+cid_to_idx = {cid: i for i, cid in enumerate(meta_df[&quot;candidate_id&quot;])}<br/>
+cid_to_years = dict(zip(meta_df[&quot;candidate_id&quot;],<br/>
+                         meta_df[&quot;years_of_experience&quot;]))<br/>
+<br/>
+# PRE-MATERIALIZE columns as numpy arrays — avoid repeated .iloc in loops<br/>
+titles_arr = meta_df[&quot;current_title&quot;].values<br/>
+years_arr = meta_df[&quot;years_of_experience&quot;].values<br/>
+cids_arr = meta_df[&quot;candidate_id&quot;].values<br/>
+<br/>
+# PRE-COMPUTE timestamp — avoid repeated pd.Timestamp.now() in loops<br/>
+TODAY = pd.Timestamp.now()<br/>
+<br/>
+# SKILL THRESHOLD (calibrated during precompute)<br/>
+try:<br/>
+    SKILL_MATCH_THRESHOLD = float(np.load(&quot;artifacts/skill_threshold.npy&quot;)[0])<br/>
+except FileNotFoundError:<br/>
+    SKILL_MATCH_THRESHOLD = 0.50<br/>
+    logging.warning(&quot;No calibrated threshold found, using default 0.50&quot;)<br/>
+<br/>
+# FAISS<br/>
+try:<br/>
+    import faiss<br/>
+    index = faiss.read_index(&quot;artifacts/candidate.index&quot;)<br/>
+    USE_FAISS = True<br/>
+except ImportError:<br/>
+    USE_FAISS = False<br/>
+    logging.warning(&quot;FAISS not available, using numpy fallback&quot;)</pre><h3 class="western">
+3.3 All Helper Functions</h3>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1"># --- EXCLUSION CHECKS (return True = exclude this candidate) ---<br/>
+<br/>
+def is_non_technical(title):<br/>
+    &quot;&quot;&quot;Hard exclude non-technical titles. Returns True if should exclude.&quot;&quot;&quot;<br/>
+    t = title.lower()<br/>
+    is_non_tech = any(kw in t for kw in NON_TECH_TITLES)<br/>
+    has_tech = any(kw in t for kw in TECH_CARVEOUTS)<br/>
+    return is_non_tech and not has_tech<br/>
+<br/>
+def is_honeypot(cid):<br/>
+    &quot;&quot;&quot;O(1) lookup — hard exclude only for suspicion &gt;= 3.&quot;&quot;&quot;<br/>
+    return cid in honeypot_hard<br/>
+<br/>
+def honeypot_penalty(cid):<br/>
+    &quot;&quot;&quot;Soft penalty for suspicion == 2. Returns multiplier.&quot;&quot;&quot;<br/>
+    if cid in honeypot_soft:<br/>
+        return 0.50<br/>
+    return 1.0<br/>
+<br/>
+# --- SCORING HELPERS ---<br/>
+<br/>
+def classify_title(title):<br/>
+    &quot;&quot;&quot;Returns 1.0 (Tier A), 0.6 (B), 0.3 (C), 0.05 (other).&quot;&quot;&quot;<br/>
+    t = title.lower()<br/>
+    if any(k in t for k in TIER_A_TITLES): return 1.0<br/>
+    if any(k in t for k in TIER_B_TITLES): return 0.6<br/>
+    if any(k in t for k in TIER_C_TITLES): return 0.3<br/>
+    return 0.05<br/>
+<br/>
+def score_experience(years):<br/>
+    &quot;&quot;&quot;Score experience band. JD sweet spot: 5-9 years.&quot;&quot;&quot;<br/>
+    if 5.0 &lt;= years &lt;= 9.0: return 1.0<br/>
+    if 4.0 &lt;= years &lt; 5.0 or 9.0 &lt; years &lt;= 12.0: return 0.75<br/>
+    if 3.0 &lt;= years &lt; 4.0 or 12.0 &lt; years &lt;= 15.0: return 0.5<br/>
+    return 0.25<br/>
+<br/>
+def compute_domain_keyword_score(career_text_lower):<br/>
+    &quot;&quot;&quot;Score domain-specific keyword matches. Returns [0, 1].&quot;&quot;&quot;<br/>
+    score = 0.0<br/>
+    for kw in STRONG_KEYWORDS:<br/>
+        if kw in career_text_lower:<br/>
+            score += 0.20<br/>
+    for kw in MODERATE_KEYWORDS:<br/>
+        if kw in career_text_lower:<br/>
+            score += 0.10<br/>
+    return min(score, 1.0)<br/>
+<br/>
+def compute_recency_scores(last_active_series):<br/>
+    &quot;&quot;&quot;Vectorized recency scoring for entire DataFrame column.&quot;&quot;&quot;<br/>
+    dates = pd.to_datetime(last_active_series, errors='coerce')<br/>
+    days = (TODAY - dates).dt.days.fillna(365)<br/>
+    scores = pd.Series(0.1, index=days.index)<br/>
+    scores[days &lt;= 30] = 1.0<br/>
+    scores[(days &gt; 30) &amp; (days &lt;= 90)] = 0.8<br/>
+    scores[(days &gt; 90) &amp; (days &lt;= 180)] = 0.5<br/>
+    scores[(days &gt; 180) &amp; (days &lt;= 365)] = 0.25<br/>
+    return scores<br/>
+<br/>
+def compute_recency_score_single(last_active):<br/>
+    &quot;&quot;&quot;Single candidate recency. Uses pre-computed TODAY. Returns [0, 1].&quot;&quot;&quot;<br/>
+    try:<br/>
+        days = (TODAY - pd.to_datetime(last_active)).days<br/>
+    except:<br/>
+        return 0.5<br/>
+    if days &lt;= 30: return 1.0<br/>
+    if days &lt;= 90: return 0.8<br/>
+    if days &lt;= 180: return 0.5<br/>
+    if days &lt;= 365: return 0.25<br/>
+    return 0.1<br/>
+<br/>
+def compute_quick_behavioral(df):<br/>
+    &quot;&quot;&quot;Vectorized quick behavioral score for Stage 1 retrieval.&quot;&quot;&quot;<br/>
+    recency = compute_recency_scores(df[&quot;last_active_date&quot;])<br/>
+    response = df[&quot;response_rate&quot;].clip(0, 1).fillna(0.5)<br/>
+    otw = df[&quot;open_to_work&quot;].astype(float).fillna(0.5)<br/>
+    return 0.50 * response + 0.30 * recency + 0.20 * otw<br/>
+<br/>
+def safe_val(val, default=0.5):<br/>
+    &quot;&quot;&quot;Safe value extraction — missing/NaN → default (0.5 = neutral).&quot;&quot;&quot;<br/>
+    if val is None or (isinstance(val, float) and np.isnan(val)):<br/>
+        return default<br/>
+    return val<br/>
+<br/>
+def endorse_weight(e):<br/>
+    &quot;&quot;&quot;Endorsement count → credibility weight.&quot;&quot;&quot;<br/>
+    if e == 0: return 0.40<br/>
+    if e &lt;= 5: return 0.70<br/>
+    if e &lt;= 20: return 0.90<br/>
+    return 1.0<br/>
+<br/>
+def duration_weight(d):<br/>
+    &quot;&quot;&quot;Skill duration (months) → credibility weight.&quot;&quot;&quot;<br/>
+    if d == 0: return 0.20<br/>
+    if d &lt;= 6: return 0.50<br/>
+    if d &lt;= 24: return 0.80<br/>
+    return 1.0<br/>
+<br/>
+def compute_credibility(skill, cid):<br/>
+    &quot;&quot;&quot;<br/>
+    Weighted average credibility. NOT multiplicative.<br/>
+    Minimum realistic output: ~0.33 (all minimums).<br/>
+    Maximum: 1.0.<br/>
+    &quot;&quot;&quot;<br/>
+    prof = PROF_WEIGHTS.get(skill[&quot;proficiency&quot;], 0.60)<br/>
+    endorse = endorse_weight(skill[&quot;endorsements&quot;])<br/>
+    dur = duration_weight(skill[&quot;duration_months&quot;])<br/>
+<br/>
+    assessments = nested.get(cid, {}).get(&quot;skill_assessment_scores&quot;, {})<br/>
+    assess_score = assessments.get(skill[&quot;skill_name&quot;])<br/>
+    if assess_score is not None:<br/>
+        assess = 1.0 if assess_score &gt;= 70 else 0.80 if assess_score &gt;= 40 else 0.50<br/>
+    else:<br/>
+        assess = 0.80<br/>
+<br/>
+    credibility = 0.35 * prof + 0.25 * endorse + 0.25 * dur + 0.15 * assess<br/>
+    return min(credibility, 1.0)<br/>
+<br/>
+# --- PENALTIES (multiplicative, applied in final scoring) ---<br/>
+<br/>
+def services_penalty(cid, f1_score):<br/>
+    &quot;&quot;&quot;<br/>
+    Conditional services penalty. JD: &quot;only worked at consulting firms — will not move forward.&quot;<br/>
+    But a genuine ML engineer at HCL who built ranking systems shouldn't be crushed.<br/>
+    - All services + low domain evidence (f1 &lt; 0.30): ×0.40 (TCS COBOL developer)<br/>
+    - All services + some domain evidence (f1 &gt;= 0.30): ×0.80 (Mindtree ML engineer)<br/>
+    &quot;&quot;&quot;<br/>
+    companies = nested.get(cid, {}).get(&quot;career_companies&quot;, [])<br/>
+    non_empty = [co for co in companies if co.strip()]<br/>
+    if not non_empty:<br/>
+        return 1.0<br/>
+    all_svc = all(<br/>
+        any(sf in co.lower() for sf in SERVICES_FIRMS) for co in non_empty<br/>
+    )<br/>
+    if all_svc:<br/>
+        if f1_score &lt; 0.30:<br/>
+            return 0.40  # no domain evidence + all services → heavy penalty<br/>
+        return 0.80      # has domain evidence → moderate penalty<br/>
+    return 1.0<br/>
+<br/>
+def stuffer_check(cid, idx):<br/>
+    &quot;&quot;&quot;<br/>
+    ×0.20 for non-tech-adjacent titles with many JD-matching skills<br/>
+    but low average credibility. Catches keyword stuffers.<br/>
+    Threshold: 0.45 (minimum credibility ~0.33, so this fires on weak claims).<br/>
+    &quot;&quot;&quot;<br/>
+    title_tier = classify_title(str(titles_arr[idx]))<br/>
+    if title_tier &gt; 0.3:  # Tier A or B — unlikely stuffer<br/>
+        return 1.0<br/>
+<br/>
+    skills = skill_lookup.get(cid, [])<br/>
+    matched = [s for s in skills if s[&quot;best_jd_match_score&quot;] &gt; SKILL_MATCH_THRESHOLD]<br/>
+    if len(matched) &lt; 5:<br/>
+        return 1.0<br/>
+<br/>
+    mean_cred = sum(compute_credibility(s, cid) for s in matched) / len(matched)<br/>
+    if mean_cred &lt; 0.45:<br/>
+        return 0.20<br/>
+    return 1.0</pre><h3 class="western">
+3.4 Stage 1: Union Retrieval + Scoring</h3>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1"># --- Build retrieval pools ---<br/>
+<br/>
+# Semantic pool (FAISS or numpy)<br/>
+semantic_pool = set()<br/>
+if USE_FAISS:<br/>
+    for q in jd_queries:<br/>
+        q32 = q.reshape(1, -1).astype(np.float32)<br/>
+        _, indices = index.search(q32, 1000)<br/>
+        semantic_pool.update(indices[0].tolist())<br/>
+else:<br/>
+    for i in range(5):<br/>
+        sims = all_semantic_raw[:, i]  # raw cosine, fine for ranking<br/>
+        top_k_idx = np.argpartition(sims, -1000)[-1000:]<br/>
+        semantic_pool.update(top_k_idx.tolist())<br/>
+<br/>
+# Skill-match pool<br/>
+must_have_counts = np.zeros(len(meta_df))<br/>
+for i, cid in enumerate(meta_df[&quot;candidate_id&quot;]):<br/>
+    skills = skill_lookup.get(cid, [])<br/>
+    must_have_counts[i] = sum(1 for s in skills<br/>
+        if s[&quot;best_jd_req_idx&quot;] &lt; 10 and s[&quot;best_jd_match_score&quot;] &gt; SKILL_MATCH_THRESHOLD)<br/>
+skill_top500 = set(np.argpartition(must_have_counts, -500)[-500:].tolist())<br/>
+<br/>
+# Behavioral pool<br/>
+behavioral_quick = compute_quick_behavioral(meta_df)<br/>
+behavioral_arr = behavioral_quick.values  # pre-materialize for loops<br/>
+behav_top200 = set(np.argpartition(behavioral_arr, -200)[-200:].tolist())<br/>
+<br/>
+# UNION<br/>
+candidate_pool = semantic_pool | skill_top500 | behav_top200<br/>
+logging.info(f&quot;Union pool size: {len(candidate_pool)}&quot;)<br/>
+<br/>
+# --- HARD EXCLUSIONS before scoring ---<br/>
+excluded_honeypots = 0<br/>
+excluded_titles = 0<br/>
+filtered_pool = []<br/>
+<br/>
+for idx in candidate_pool:<br/>
+    cid = cids_arr[idx]       # pre-materialized numpy array<br/>
+    title = str(titles_arr[idx])  # pre-materialized numpy array<br/>
+<br/>
+    if is_honeypot(cid):<br/>
+        excluded_honeypots += 1<br/>
+        continue<br/>
+<br/>
+    if is_non_technical(title):<br/>
+        excluded_titles += 1<br/>
+        continue<br/>
+<br/>
+    filtered_pool.append(idx)<br/>
+<br/>
+logging.info(f&quot;Excluded {excluded_honeypots} honeypots, &quot;<br/>
+             f&quot;{excluded_titles} non-technical titles. &quot;<br/>
+             f&quot;Remaining: {len(filtered_pool)}&quot;)<br/>
+<br/>
+# --- Stage 1 scoring (uses pre-materialized arrays, no .iloc) ---<br/>
+def stage1_score(idx):<br/>
+    cid = cids_arr[idx]<br/>
+<br/>
+    semantic = float(all_semantic_max[idx])        # pre-computed [0,1]<br/>
+    archetype = float(archetype_max[idx])           # pre-computed [0,1]<br/>
+<br/>
+    skills = skill_lookup.get(cid, [])<br/>
+    matched = [s for s in skills<br/>
+               if s[&quot;best_jd_req_idx&quot;] &lt; 10 and s[&quot;best_jd_match_score&quot;] &gt; 0.50]<br/>
+    skill = min(len(matched) / 10.0, 1.0)<br/>
+<br/>
+    career_text = nested.get(cid, {}).get(&quot;career_text&quot;, &quot;&quot;).lower()<br/>
+    pattern = compute_domain_keyword_score(career_text)<br/>
+<br/>
+    title = classify_title(str(titles_arr[idx]))<br/>
+    behav = float(behavioral_arr[idx])  # pre-materialized<br/>
+    exp = score_experience(float(years_arr[idx]))<br/>
+<br/>
+    score = (<br/>
+        0.25 * semantic +<br/>
+        0.15 * archetype +<br/>
+        0.20 * skill +<br/>
+        0.15 * pattern +<br/>
+        0.10 * title +<br/>
+        0.08 * behav +<br/>
+        0.07 * exp<br/>
+    )<br/>
+    score *= stuffer_check(cid, idx)<br/>
+    # services_penalty NOT applied at Stage 1<br/>
+    # Reason: real f1 isn't available yet (cross-encoder hasn't run).<br/>
+    # Using keyword proxy could misclassify genuine ML engineers at services<br/>
+    # firms who use non-standard language. Applied only in final scoring.<br/>
+    return score<br/>
+<br/>
+pool_scores = [(idx, cids_arr[idx], stage1_score(idx))<br/>
+               for idx in filtered_pool]<br/>
+pool_scores.sort(key=lambda x: x[2], reverse=True)<br/>
+<br/>
+top_k = min(800, len(pool_scores))<br/>
+top_800 = pool_scores[:top_k]<br/>
+logging.info(f&quot;Stage 1 selected top {top_k}&quot;)</pre><h3 class="western">
+3.5 Stage 2: Cross-Encoder (Sigmoid)</h3>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1">def select_relevant_roles(career_history, n=3):<br/>
+    &quot;&quot;&quot;Pick n roles most relevant to retrieval/ranking domain.&quot;&quot;&quot;<br/>
+    if len(career_history) &lt;= n:<br/>
+        return career_history<br/>
+<br/>
+    scored = []<br/>
+    for role in career_history:<br/>
+        desc = (role.get(&quot;description&quot;, &quot;&quot;) or &quot;&quot;).lower()<br/>
+        relevance = sum(1 for kw in STRONG_KEYWORDS if kw in desc)<br/>
+        relevance += sum(0.5 for kw in MODERATE_KEYWORDS if kw in desc)<br/>
+        scored.append((relevance, role))<br/>
+    scored.sort(key=lambda x: x[0], reverse=True)<br/>
+<br/>
+    if scored[0][0] == 0:<br/>
+        by_date = sorted(career_history,<br/>
+                         key=lambda r: r.get(&quot;start_date&quot;, &quot;&quot;),<br/>
+                         reverse=True)<br/>
+        return by_date[:n]<br/>
+    return [role for _, role in scored[:n]]<br/>
+<br/>
+def build_ce_text(cid):<br/>
+    &quot;&quot;&quot;Build candidate text for cross-encoder input (~375 tokens).&quot;&quot;&quot;<br/>
+    data = nested.get(cid, {})<br/>
+    parts = []<br/>
+<br/>
+    summary = str(meta_df.iloc[cid_to_idx[cid]].get(&quot;summary&quot;, &quot;&quot;) or &quot;&quot;)<br/>
+    if summary:<br/>
+        parts.append(summary[:200])<br/>
+<br/>
+    career = data.get(&quot;career_history&quot;, [])<br/>
+    relevant = select_relevant_roles(career, n=3)<br/>
+    for role in relevant:<br/>
+        title = role.get(&quot;title&quot;, &quot;&quot;)<br/>
+        company = role.get(&quot;company&quot;, &quot;&quot;)<br/>
+        desc = (role.get(&quot;description&quot;, &quot;&quot;) or &quot;&quot;)[:250]<br/>
+        parts.append(f&quot;{title} at {company}: {desc}&quot;)<br/>
+<br/>
+    skill_names = &quot;, &quot;.join(data.get(&quot;skill_names&quot;, [])[:8])<br/>
+    parts.append(f&quot;Skills: {skill_names}&quot;)<br/>
+<br/>
+    return &quot; &quot;.join(parts)[:1500]<br/>
+<br/>
+# --- Run cross-encoder ---<br/>
+from sentence_transformers import CrossEncoder<br/>
+ce_model = CrossEncoder(&quot;artifacts/models/ce/&quot;, device=&quot;cpu&quot;)<br/>
+<br/>
+pairs = [(JD_CORE, build_ce_text(cid)) for _, cid, _ in top_800]<br/>
+raw_logits = ce_model.predict(pairs, batch_size=32)<br/>
+<br/>
+# SIGMOID normalization — preserves magnitude, no artificial separation<br/>
+cross_scores = 1.0 / (1.0 + np.exp(-raw_logits))</pre><h3 class="western">
+3.6 Stage 3: 7-Feature Scoring</h3>
+<p><b>Every feature clamped to [0.0, 1.0]. All cosine mapped via
+(cos+1)/2.</b></p>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1"># --- Feature 1: Career Domain Evidence (weight: 0.28) ---<br/>
+<br/>
+def feature_1(idx, cid, cross_sigmoid):<br/>
+    # Sub-A: Cross-encoder sigmoid (already [0,1])<br/>
+<br/>
+    # Sub-B: Archetype max (precomputed, already [0,1])<br/>
+    arch = float(archetype_max[idx])<br/>
+<br/>
+    # Sub-C: 0.25 keyword + 0.75 semantic (domain-specific query only)<br/>
+    career_text = nested.get(cid, {}).get(&quot;career_text&quot;, &quot;&quot;).lower()<br/>
+    kw = compute_domain_keyword_score(career_text)<br/>
+    # Use ONLY query 0 (&quot;search ranking recommendation retrieval...&quot;) for F1<br/>
+    # all_semantic_max includes query 2 (production/DevOps) which inflates<br/>
+    # non-domain candidates. Query 0 is domain-specific and more precise.<br/>
+    cos_raw = float(cand_embeds[idx] @ jd_queries[0])<br/>
+    sem = (cos_raw + 1.0) / 2.0<br/>
+<br/>
+    domain = 0.25 * kw + 0.75 * sem<br/>
+<br/>
+    result = 0.40 * cross_sigmoid + 0.30 * arch + 0.30 * domain<br/>
+    return max(min(result, 1.0), 0.0)<br/>
+<br/>
+<br/>
+# --- Feature 2: Retrieval/Search Expertise (weight: 0.30) ---<br/>
+# Uses TOP-5 must-have + TOP-3 nice-to-have for DEPTH over breadth<br/>
+<br/>
+def feature_2(cid):<br/>
+    skills = skill_lookup.get(cid, [])<br/>
+<br/>
+    # DEDUP by JD requirement index — keep highest credible score<br/>
+    seen_jd_reqs = {}<br/>
+    for s in skills:<br/>
+        if s[&quot;best_jd_match_score&quot;] &lt; SKILL_MATCH_THRESHOLD:<br/>
+            continue<br/>
+        req_idx = s[&quot;best_jd_req_idx&quot;]<br/>
+        cred = compute_credibility(s, cid)<br/>
+        credible_score = s[&quot;best_jd_match_score&quot;] * cred<br/>
+        if req_idx not in seen_jd_reqs or credible_score &gt; seen_jd_reqs[req_idx]:<br/>
+            seen_jd_reqs[req_idx] = credible_score<br/>
+<br/>
+    must_hits = sorted([v for k, v in seen_jd_reqs.items() if k &lt; 10],<br/>
+                       reverse=True)<br/>
+    nice_hits = sorted([v for k, v in seen_jd_reqs.items() if k &gt;= 10],<br/>
+                       reverse=True)<br/>
+<br/>
+    # DEPTH: top-5 must-have scores, divisor = max(count, 3)<br/>
+    top_must = must_hits[:5]<br/>
+    depth = min(sum(top_must) / max(len(top_must), 3), 1.0) if top_must else 0.0<br/>
+<br/>
+    # COVERAGE: unique JD must-have requirements matched<br/>
+    # 6 out of 10 unique must-haves = perfect coverage<br/>
+    # Rewards breadth alongside depth<br/>
+    coverage = min(len(must_hits) / 6, 1.0)<br/>
+<br/>
+    # NICE-TO-HAVE: top-3, divisor = max(count, 2)<br/>
+    top_nice = nice_hits[:3]<br/>
+    nice_score = min(sum(top_nice) / max(len(top_nice), 2), 1.0) if top_nice else 0.0<br/>
+<br/>
+    # Blend: depth matters most, but coverage prevents FAISS×4 beating<br/>
+    # FAISS+Elasticsearch+PyTorch+Embeddings<br/>
+    must_component = 0.60 * depth + 0.40 * coverage<br/>
+    result = 0.70 * must_component + 0.30 * nice_score<br/>
+    return min(result, 1.0)<br/>
+<br/>
+<br/>
+# --- Feature 3: Production Deployment (weight: 0.15) ---<br/>
+<br/>
+def feature_3(cid, idx):<br/>
+    ct = nested.get(cid, {}).get(&quot;career_text&quot;, &quot;&quot;).lower()<br/>
+<br/>
+    kw_score = 0.0<br/>
+    for k in DEPLOYMENT_KEYWORDS:<br/>
+        if k in ct: kw_score += 0.15<br/>
+    for k in SCALE_KEYWORDS:<br/>
+        if k in ct: kw_score += 0.10<br/>
+    for k in PRODUCT_ENG_KEYWORDS:<br/>
+        if k in ct: kw_score += 0.08<br/>
+    for k in ANTI_PRODUCTION_KEYWORDS:<br/>
+        if k in ct: kw_score -= 0.15<br/>
+    kw_score = max(min(kw_score, 1.0), 0.0)<br/>
+<br/>
+    cos_raw = float(cand_embeds[idx] @ jd_queries[2])<br/>
+    sem = (cos_raw + 1.0) / 2.0<br/>
+<br/>
+    result = 0.40 * kw_score + 0.60 * sem<br/>
+    return max(min(result, 1.0), 0.0)<br/>
+<br/>
+<br/>
+# --- Feature 4: Vector DB &amp; Infrastructure (weight: 0.10) ---<br/>
+<br/>
+def feature_4(cid, idx):<br/>
+    skills = skill_lookup.get(cid, [])<br/>
+    career_text = nested.get(cid, {}).get(&quot;career_text&quot;, &quot;&quot;).lower()<br/>
+<br/>
+    # TOOL-BASED COMPONENT (explicit tool names)<br/>
+    tools_found = {}<br/>
+    for s in skills:<br/>
+        name_lower = s.get(&quot;norm_name&quot;, s[&quot;skill_name&quot;].lower())<br/>
+<br/>
+        # ONLY vector/search tools or specific JD indices<br/>
+        is_tool = (name_lower in VECTOR_TOOLS or<br/>
+                   s[&quot;best_jd_req_idx&quot;] in VECTOR_SEARCH_JD_INDICES)<br/>
+        if not is_tool:<br/>
+            continue<br/>
+<br/>
+        cred = compute_credibility(s, cid)<br/>
+        in_desc = name_lower in career_text<br/>
+        weight = 1.0 if in_desc else 0.6<br/>
+        effective = cred * weight<br/>
+        if name_lower not in tools_found or effective &gt; tools_found[name_lower]:<br/>
+            tools_found[name_lower] = effective<br/>
+<br/>
+    n = len(tools_found)<br/>
+    avg_cred = sum(tools_found.values()) / max(n, 1)<br/>
+    base = {0: 0.0, 1: 0.4, 2: 0.7}.get(n, 1.0)<br/>
+    tool_score = min(base * avg_cred, 1.0)<br/>
+<br/>
+    # SEMANTIC COMPONENT — catches &quot;built dense retrieval pipelines&quot;<br/>
+    # without explicitly mentioning FAISS/Pinecone/etc.<br/>
+    # Uses JD query 1: &quot;embeddings vector database FAISS... hybrid search&quot;<br/>
+    cos_raw = float(cand_embeds[idx] @ jd_queries[1])<br/>
+    sem_infra = (cos_raw + 1.0) / 2.0<br/>
+<br/>
+    # Blend: tools are stronger signal, semantic catches implicit experience<br/>
+    result = 0.60 * tool_score + 0.40 * sem_infra<br/>
+    return max(min(result, 1.0), 0.0)<br/>
+<br/>
+<br/>
+# --- Feature 5: Availability &amp; Behavioral (weight: 0.10, capped 0.80) ---<br/>
+<br/>
+def feature_5(idx):<br/>
+    row = meta_df.iloc[idx]<br/>
+<br/>
+    recency = compute_recency_score_single(row[&quot;last_active_date&quot;])<br/>
+<br/>
+    rr = safe_val(row[&quot;response_rate&quot;], 0.5)<br/>
+    response = (1.0 if rr &gt;= 0.7 else 0.85 if rr &gt;= 0.5<br/>
+                else 0.60 if rr &gt;= 0.3 else 0.35 if rr &gt;= 0.15 else 0.15)<br/>
+<br/>
+    rt = safe_val(row[&quot;avg_response_time_hours&quot;], 72)<br/>
+    resp_time = 1.0 if rt &lt; 24 else 0.8 if rt &lt; 72 else 0.5 if rt &lt; 168 else 0.3<br/>
+<br/>
+    ic = safe_val(row[&quot;interview_completion_rate&quot;], 0.5)<br/>
+    interview = (1.0 if ic &gt;= 0.8 else 0.75 if ic &gt;= 0.6<br/>
+                 else 0.5 if ic &gt;= 0.4 else 0.25)<br/>
+<br/>
+    otw = 1.0 if safe_val(row[&quot;open_to_work&quot;], False) else 0.5<br/>
+<br/>
+    gh = safe_val(row[&quot;github_activity_score&quot;], -1)<br/>
+    github = (0.3 if gh &lt; 0 else 0.4 if gh &lt;= 20<br/>
+              else 0.7 if gh &lt;= 50 else 0.9 if gh &lt;= 80 else 1.0)<br/>
+<br/>
+    ve = 1.0 if safe_val(row[&quot;verified_email&quot;], False) else 0.0<br/>
+    vp = 1.0 if safe_val(row[&quot;verified_phone&quot;], False) else 0.0<br/>
+    li = 1.0 if safe_val(row[&quot;linkedin_connected&quot;], False) else 0.0<br/>
+    trust = 0.3 * ve + 0.3 * vp + 0.4 * li<br/>
+<br/>
+    nd = safe_val(row[&quot;notice_period_days&quot;], 90)<br/>
+    notice = (1.0 if nd &lt;= 30 else 0.8 if nd &lt;= 60<br/>
+              else 0.6 if nd &lt;= 90 else 0.4 if nd &lt;= 120 else 0.25)<br/>
+<br/>
+    pc = safe_val(row[&quot;profile_completeness_score&quot;], 50) / 100<br/>
+    sr = min(safe_val(row[&quot;saved_by_recruiters_30d&quot;], 0) / 15, 1.0)<br/>
+<br/>
+    result = (<br/>
+        0.22 * recency + 0.22 * response + 0.10 * resp_time +<br/>
+        0.10 * interview + 0.08 * otw + 0.08 * github +<br/>
+        0.05 * trust + 0.08 * notice + 0.04 * pc + 0.03 * sr<br/>
+    )<br/>
+    return min(result, 0.80)  # CAPPED<br/>
+<br/>
+<br/>
+# --- Feature 6: LLM &amp; Adjacent (weight: 0.04) ---<br/>
+<br/>
+def feature_6(cid):<br/>
+    skills = skill_lookup.get(cid, [])<br/>
+    VALUED = {10, 11, 12}<br/>
+    LESS_VALUED = {13, 14}<br/>
+<br/>
+    score = 0.0<br/>
+    for s in skills:<br/>
+        if s[&quot;best_jd_match_score&quot;] &lt; SKILL_MATCH_THRESHOLD:<br/>
+            continue<br/>
+        cred = compute_credibility(s, cid)<br/>
+        if s[&quot;best_jd_req_idx&quot;] in VALUED:<br/>
+            score += 0.15 * cred<br/>
+        elif s[&quot;best_jd_req_idx&quot;] in LESS_VALUED:<br/>
+            score += 0.05 * cred<br/>
+    return min(score, 1.0)<br/>
+<br/>
+<br/>
+# --- Feature 7: Career Progression (weight: 0.03) ---<br/>
+<br/>
+def get_title_level(title):<br/>
+    t = title.lower()<br/>
+    for kw in sorted(TITLE_LEVELS.keys(), key=len, reverse=True):<br/>
+        if kw in t:<br/>
+            return TITLE_LEVELS[kw]<br/>
+    return 2<br/>
+<br/>
+def feature_7(cid):<br/>
+    career = nested.get(cid, {}).get(&quot;career_history&quot;, [])<br/>
+    if len(career) &lt; 2:<br/>
+        return 0.5  # neutral<br/>
+<br/>
+    # SORT CHRONOLOGICALLY — oldest first<br/>
+    career_sorted = sorted(career, key=lambda r: r.get(&quot;start_date&quot;, &quot;&quot;))<br/>
+    levels = [get_title_level(r.get(&quot;title&quot;, &quot;&quot;)) for r in career_sorted]<br/>
+<br/>
+    ups = sum(1 for i in range(1, len(levels)) if levels[i] &gt; levels[i-1])<br/>
+    downs = sum(1 for i in range(1, len(levels)) if levels[i] &lt; levels[i-1])<br/>
+    total = len(levels) - 1<br/>
+<br/>
+    if ups &gt; downs:<br/>
+        return min(0.5 + (ups / total) * 0.5, 1.0)<br/>
+    elif ups == downs:<br/>
+        return 0.5<br/>
+    else:<br/>
+        return max(0.5 - (downs / total) * 0.3, 0.2)</pre><h3 class="western">
+3.7 Final Scoring Formula</h3>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1">def compute_final_score(idx, cid, cross_sigmoid):<br/>
+    f1 = feature_1(idx, cid, cross_sigmoid)<br/>
+    f2 = feature_2(cid)<br/>
+    f3 = feature_3(cid, idx)<br/>
+    f4 = feature_4(cid, idx)<br/>
+    f5 = feature_5(idx)<br/>
+    f6 = feature_6(cid)<br/>
+    f7 = feature_7(cid)<br/>
+<br/>
+    raw = (<br/>
+        0.32 * f1 +    # career domain evidence (highest — resists skill stuffing)<br/>
+        0.26 * f2 +    # retrieval expertise (depth + coverage)<br/>
+        0.15 * f3 +    # production deployment (keyword + semantic)<br/>
+        0.10 * f4 +    # vector DB (tool + semantic)<br/>
+        0.10 * f5 +    # availability (capped 0.80)<br/>
+        0.04 * f6 +    # LLM adjacent<br/>
+        0.03 * f7      # career progression<br/>
+    )<br/>
+    # Weights sum to 1.00<br/>
+    # NO additive title/experience modifiers — already in Stage 1<br/>
+<br/>
+    # MULTIPLICATIVE PENALTIES ONLY<br/>
+    # Honeypot hard-excluded before this point; soft-penalized here<br/>
+    raw *= services_penalty(cid, f1)<br/>
+    raw *= stuffer_check(cid, idx)<br/>
+    raw *= honeypot_penalty(cid)  # ×0.50 for suspicion==2<br/>
+<br/>
+    return raw, [f1, f2, f3, f4, f5, f6, f7]<br/>
+<br/>
+# --- Score top 800 → select top 100 ---<br/>
+final_scores = []<br/>
+for rank_in_800, (idx, cid, s1) in enumerate(top_800):<br/>
+    score, features = compute_final_score(idx, cid, cross_scores[rank_in_800])<br/>
+    final_scores.append((idx, cid, score, features))<br/>
+<br/>
+final_scores.sort(key=lambda x: x[2], reverse=True)<br/>
+top_100 = final_scores[:100]</pre>
+<hr/>
+
+<h2 class="western">4. Stage 4: Data-Driven Reasoning</h2>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1">def generate_reasoning(cid, rank, features, idx):<br/>
+    data = nested.get(cid, {})<br/>
+    row = meta_df.iloc[idx]<br/>
+<br/>
+    title = str(row[&quot;current_title&quot;])<br/>
+    years = round(float(row[&quot;years_of_experience&quot;]), 1)<br/>
+    country = str(row.get(&quot;country&quot;, &quot;&quot;))<br/>
+    location = f&quot;{row['location']}, {country}&quot;<br/>
+    notice = int(safe_val(row.get(&quot;notice_period_days&quot;, 90), 90))<br/>
+    response_rate = float(safe_val(row.get(&quot;response_rate&quot;, 0.5), 0.5))<br/>
+    companies = data.get(&quot;career_companies&quot;, [])[:3]<br/>
+    top_skills = data.get(&quot;skill_names&quot;, [])[:5]<br/>
+    career_text = data.get(&quot;career_text&quot;, &quot;&quot;).lower()<br/>
+<br/>
+    # --- SENTENCE 1: Primary strength (highest feature) ---<br/>
+    sorted_f = sorted(enumerate(features), key=lambda x: x[1], reverse=True)<br/>
+    best_i, best_v = sorted_f[0]<br/>
+    s1 = _strength_sentence(best_i, cid, data, title, years,<br/>
+                            companies, top_skills, career_text)<br/>
+<br/>
+    # --- SENTENCE 2: Secondary strength (if significant) ---<br/>
+    second_i, second_v = sorted_f[1]<br/>
+    s2 = &quot;&quot;<br/>
+    if second_v &gt; 0.3:<br/>
+        s2 = _secondary_sentence(second_i, cid, data, top_skills, career_text)<br/>
+<br/>
+    # --- SENTENCE 3: Concern (data-driven) ---<br/>
+    s3 = _concern_sentence(notice, years, response_rate,<br/>
+                           country, location, companies)<br/>
+<br/>
+    # --- Assemble by rank band (controls length/tone, NOT structure) ---<br/>
+    if rank &lt;= 10:<br/>
+        parts = [s for s in [s1, s2, s3] if s]<br/>
+    elif rank &lt;= 30:<br/>
+        parts = [s1, s3] if s3 else [s1, s2] if s2 else [s1]<br/>
+    elif rank &lt;= 60:<br/>
+        parts = [s1, s3] if s3 else [s1]<br/>
+    else:<br/>
+        parts = [s1]<br/>
+        if s3: parts.append(s3)<br/>
+<br/>
+    return &quot; &quot;.join(parts)<br/>
+<br/>
+<br/>
+def _strength_sentence(feat_idx, cid, data, title, years,<br/>
+                       companies, top_skills, career_text):<br/>
+    &quot;&quot;&quot;Primary strength — built from actual profile data.&quot;&quot;&quot;<br/>
+    co = companies[0] if companies else &quot;their company&quot;<br/>
+<br/>
+    if feat_idx == 0:  # career domain<br/>
+        found = [kw for kw in STRONG_KEYWORDS if kw in career_text]<br/>
+        if found:<br/>
+            return (f&quot;{title} with {years}yrs; career includes &quot;<br/>
+                    f&quot;{found[0]} work at {co}.&quot;)<br/>
+        return f&quot;{title} with {years}yrs; strong alignment with retrieval/ranking requirements.&quot;<br/>
+<br/>
+    elif feat_idx == 1:  # retrieval skills<br/>
+        matched = [s[&quot;skill_name&quot;] for s in skill_lookup.get(cid, [])<br/>
+                   if s[&quot;best_jd_match_score&quot;] &gt; 0.50<br/>
+                   and s[&quot;best_jd_req_idx&quot;] &lt; 10][:4]<br/>
+        skills_str = &quot;, &quot;.join(matched) if matched else &quot;, &quot;.join(top_skills[:3])<br/>
+        return f&quot;Credibility-verified retrieval skills: {skills_str}; {years}yrs as {title}.&quot;<br/>
+<br/>
+    elif feat_idx == 2:  # production<br/>
+        found = [kw for kw in DEPLOYMENT_KEYWORDS if kw in career_text]<br/>
+        if found:<br/>
+            return f&quot;Production deployment evidence ({found[0]}) at {co}; {years}yrs experience.&quot;<br/>
+        return f&quot;Career at {co} indicates production-level work; {years}yrs as {title}.&quot;<br/>
+<br/>
+    elif feat_idx == 3:  # vector DB<br/>
+        tools = [s[&quot;skill_name&quot;] for s in skill_lookup.get(cid, [])<br/>
+                 if s.get(&quot;norm_name&quot;, s[&quot;skill_name&quot;].lower()) in VECTOR_TOOLS][:3]<br/>
+        tools_str = &quot;, &quot;.join(tools) if tools else &quot;vector search tools&quot;<br/>
+        return f&quot;Search infrastructure experience with {tools_str}; {years}yrs as {title}.&quot;<br/>
+<br/>
+    elif feat_idx == 4:  # behavioral<br/>
+        return f&quot;Highly active on Redrob platform; {title} with {years}yrs at {co}.&quot;<br/>
+<br/>
+    elif feat_idx == 5:  # LLM<br/>
+        return f&quot;LLM/adjacent ML expertise complements core skills; {title} with {years}yrs.&quot;<br/>
+<br/>
+    else:  # progression<br/>
+        return f&quot;Strong career progression trajectory; currently {title} with {years}yrs.&quot;<br/>
+<br/>
+<br/>
+def _secondary_sentence(feat_idx, cid, data, top_skills, career_text):<br/>
+    &quot;&quot;&quot;Supporting evidence — shorter, complementary to primary.&quot;&quot;&quot;<br/>
+    if feat_idx == 0:<br/>
+        found = [kw for kw in STRONG_KEYWORDS if kw in career_text]<br/>
+        return f&quot;Also shows {found[0]} domain experience.&quot; if found else &quot;&quot;<br/>
+<br/>
+    elif feat_idx == 1:<br/>
+        matched = [s[&quot;skill_name&quot;] for s in skill_lookup.get(cid, [])<br/>
+                   if s[&quot;best_jd_match_score&quot;] &gt; 0.50][:3]<br/>
+        return f&quot;Relevant skills include {', '.join(matched)}.&quot; if matched else &quot;&quot;<br/>
+<br/>
+    elif feat_idx == 2:<br/>
+        return &quot;Has shipped systems to production environments.&quot;<br/>
+<br/>
+    elif feat_idx == 3:<br/>
+        tools = [s[&quot;skill_name&quot;] for s in skill_lookup.get(cid, [])<br/>
+                 if s.get(&quot;norm_name&quot;, s[&quot;skill_name&quot;].lower()) in VECTOR_TOOLS][:2]<br/>
+        return f&quot;Experience with {', '.join(tools)}.&quot; if tools else &quot;&quot;<br/>
+<br/>
+    elif feat_idx == 4:<br/>
+        return &quot;Active platform engagement signals availability.&quot;<br/>
+<br/>
+    elif feat_idx == 5:<br/>
+        return &quot;Additional LLM fine-tuning experience.&quot;<br/>
+<br/>
+    else:<br/>
+        return &quot;Consistent career growth trajectory.&quot;<br/>
+<br/>
+<br/>
+def _concern_sentence(notice, years, response_rate, country, location, companies):<br/>
+    &quot;&quot;&quot;Build concern from actual data — returns the most relevant one.&quot;&quot;&quot;<br/>
+    if notice &gt; 90:<br/>
+        return f&quot;Note: {notice}-day notice period significantly exceeds JD's 30-day preference.&quot;<br/>
+    if notice &gt; 60:<br/>
+        return f&quot;Note: {notice}-day notice period exceeds JD's 30-day preference.&quot;<br/>
+    if years &lt; 4:<br/>
+        return f&quot;Note: {years}yrs experience is below the 5-9yr target range.&quot;<br/>
+    if years &gt; 12:<br/>
+        return f&quot;Note: {years}yrs experience is above the 5-9yr target range.&quot;<br/>
+    if response_rate &lt; 0.2:<br/>
+        return f&quot;Note: low recruiter response rate ({response_rate:.0%}) may indicate limited availability.&quot;<br/>
+    if &quot;india&quot; not in country.lower():<br/>
+        return f&quot;Note: based in {location}, outside preferred India locations.&quot;<br/>
+<br/>
+    non_empty = [co for co in companies if co.strip()]<br/>
+    if non_empty:<br/>
+        all_svc = all(any(sf in co.lower() for sf in SERVICES_FIRMS) for co in non_empty)<br/>
+        if all_svc:<br/>
+            return f&quot;Note: entire career at services firms ({', '.join(str(c) for c in non_empty[:2])}).&quot;<br/>
+<br/>
+    return &quot;&quot;</pre>
+<hr/>
+
+<h2 class="western">5. Output</h2>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1">import csv<br/>
+<br/>
+with open(&quot;submission.csv&quot;, &quot;w&quot;, newline=&quot;&quot;) as f:<br/>
+    writer = csv.writer(f)<br/>
+    # CRITICAL: column order must be candidate_id, rank, score, reasoning<br/>
+    # Validator does strict header equality — wrong order = auto-rejection<br/>
+    writer.writerow([&quot;candidate_id&quot;, &quot;rank&quot;, &quot;score&quot;, &quot;reasoning&quot;])<br/>
+    for rank, (idx, cid, score, features) in enumerate(top_100, 1):<br/>
+        reasoning = generate_reasoning(cid, rank, features, idx)<br/>
+        writer.writerow([cid, rank, round(score, 6), reasoning])<br/>
+<br/>
+logging.info(&quot;submission.csv written with 100 candidates&quot;)</pre>
+<hr/>
+
+<h2 class="western">6. Missing-ID Handling</h2>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1"># At any point where we access precomputed data:<br/>
+# If candidate_id is not in artifacts, skip + log.<br/>
+<br/>
+def safe_lookup(cid):<br/>
+    if cid not in cid_to_idx:<br/>
+        logging.warning(f&quot;Candidate {cid} not in artifacts. Skipping.&quot;)<br/>
+        return None<br/>
+    return cid_to_idx[cid]</pre>
+<hr/>
+
+<h2 class="western">7. File Structure</h2>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1">redrob challange/<br/>
+├── precompute.py<br/>
+├── rank.py<br/>
+├── scoring/<br/>
+│   ├── __init__.py<br/>
+│   ├── constants.py        All keyword lists, JD queries, thresholds<br/>
+│   ├── features.py         7 features (all clamped, cosine mapped)<br/>
+│   ├── penalties.py        services ×0.40, stuffer ×0.20<br/>
+│   ├── exclusions.py       is_honeypot(), is_non_technical()<br/>
+│   └── reasoning.py        Data-driven reasoning builder<br/>
+├── artifacts/              ~1.1GB<br/>
+├── requirements.txt<br/>
+└── README.md</pre><h2 class="western">
+8. Dependencies</h2>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1">sentence-transformers&gt;=2.2.0<br/>
+numpy&gt;=1.24.0<br/>
+torch&gt;=2.0.0<br/>
+pandas&gt;=2.0.0<br/>
+pyarrow&gt;=12.0.0<br/>
+faiss-cpu&gt;=1.7.0</pre><h2 class="western">
+9. Runtime Budget</h2>
+<table width="100%" cellpadding="4" cellspacing="0">
+	<col width="128*"/>
+	<col width="128*"/>
+	<thead>
+		<tr valign="top">
+			<th width="50%" style="border-top: 1px solid #000000; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0.04in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Step</p>
+			</th>
+			<th width="50%" style="border: 1px solid #000000; padding: 0.04in"><p align="left">
+				Time</p>
+			</th>
+		</tr>
+	</thead>
+	<tbody>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Load + cast + vectorize</p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p align="left">
+				~22s</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				FAISS retrieval</p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p align="left">
+				~1s</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Skill/behavioral retrieval</p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p align="left">
+				~5s</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Hard exclusions (~3500)</p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p align="left">
+				~1s</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Stage 1 scoring (remaining)</p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p align="left">
+				~12s</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Load cross-encoder + cold torch</p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p align="left">
+				~20s</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p>
+				Cross-encoder <b>800</b> pairs</p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p align="left">
+				~95s</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Feature scoring (800)</p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p align="left">
+				~15s</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Reasoning (100)</p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p align="left">
+				~5s</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Write CSV</p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p align="left">
+				&lt;1s</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p>
+				<b>Total</b></p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<b>~177s</b></p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p>
+				<b>Worst case</b></p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<b>~260s</b></p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p>
+				<b>Limit</b></p>
+			</td>
+			<td width="50%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<b>300s ✅</b></p>
+			</td>
+		</tr>
+	</tbody>
+</table>
+<p><br/>
+<br/>
+
+</p>
+<h2 class="western">10. Changes v14 → v15</h2>
+<table width="100%" cellpadding="4" cellspacing="0">
+	<col width="85*"/>
+	<col width="85*"/>
+	<col width="85*"/>
+	<thead>
+		<tr valign="top">
+			<th width="33%" style="border-top: 1px solid #000000; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0.04in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Issue</p>
+			</th>
+			<th width="33%" style="border-top: 1px solid #000000; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0.04in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				v14</p>
+			</th>
+			<th width="33%" style="border: 1px solid #000000; padding: 0.04in"><p align="left">
+				v15</p>
+			</th>
+		</tr>
+	</thead>
+	<tbody>
+		<tr valign="top">
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Honeypot exclusion</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				suspicion ≥2 → hard exclude all</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				≥<b>3 hard exclude, ==2 → ×0.50 penalty</b></p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Feature weights</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				F1=0.28, F2=0.30</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<b>F1=0.32, F2=0.26</b> (career &gt; skills)</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Stage 2 pool</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Top-500</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<b>Top-800</b> (better recall)</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Cross-encoder pairs</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				500</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<b>800</b> (~95s, still under budget)</p>
+			</td>
+		</tr>
+	</tbody>
+</table>
+<p><br/>
+<br/>
+
+</p>
+<h2 class="western">11. Cumulative Changes (v8 → v15)</h2>
+<table width="100%" cellpadding="4" cellspacing="0">
+	<col width="85*"/>
+	<col width="85*"/>
+	<col width="85*"/>
+	<thead>
+		<tr valign="top">
+			<th width="33%" style="border-top: 1px solid #000000; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0.04in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Issue</p>
+			</th>
+			<th width="33%" style="border-top: 1px solid #000000; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0.04in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				v8</p>
+			</th>
+			<th width="33%" style="border: 1px solid #000000; padding: 0.04in"><p align="left">
+				v15</p>
+			</th>
+		</tr>
+	</thead>
+	<tbody>
+		<tr valign="top">
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				CSV column order</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p>
+				Wrong (<font face="Liberation Mono, monospace">rank</font> first)</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<font face="Liberation Mono, monospace"><b>candidate_id</b></font><b>
+				first</b></p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Cross-encoder normalization</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Percentile</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<b>Sigmoid</b></p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Cosine range</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				[-1,1] assumed [0,1]</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<b>(cos+1)/2 everywhere</b></p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Title/exp double-counting</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Stage 1 + final</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<b>Stage 1 only</b></p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Non-tech titles</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				No penalty</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<b>Hard exclude</b></p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Stuffer threshold</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				0.15 (never fires)</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<b>0.45</b></p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Feature weights</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				F1=0.35, F2=0.25</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<b>F1=0.32, F2=0.26</b> (career dominates)</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Feature 1 semantic</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Single query</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<b>Query 0 only</b> (domain-specific)</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Feature 2 scoring</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				sum(all)/10</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<b>0.60 depth + 0.40 coverage</b></p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Feature 4</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p>
+				<font face="Liberation Mono, monospace">match_score &gt; 0.60</font></p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<b>VECTOR_TOOLS or JD {1,15} + 40% semantic</b></p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Skill threshold</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Hardcoded 0.50</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<b>Calibrated, used everywhere</b></p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Honeypot</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				×0.30 soft</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				≥<b>3 hard exclude, ==2 ×0.50, precomputed</b></p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Services</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				×0.92</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<b>×0.40 if weak, ×0.80 if strong</b> (final only)</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Reasoning</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Template rotation</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<b>Data-driven</b></p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Stage 2 pool</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				500</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<b>800</b> (better recall)</p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Candidate embedding</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Unstructured concat</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<b>Labeled sections</b></p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Semantic scoring</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Per-candidate loop</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<b>Vectorized matmul</b></p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Array access</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p>
+				<font face="Liberation Mono, monospace">.iloc</font> in loops</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<b>Pre-materialized numpy</b></p>
+			</td>
+		</tr>
+		<tr valign="top">
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p align="left">
+				Timestamp</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: none; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0in"><p>
+				<font face="Liberation Mono, monospace">now()</font> in loops</p>
+			</td>
+			<td width="33%" style="border-top: none; border-bottom: 1px solid #000000; border-left: 1px solid #000000; border-right: 1px solid #000000; padding-top: 0in; padding-bottom: 0.04in; padding-left: 0.04in; padding-right: 0.04in"><p>
+				<b>Pre-computed </b><font face="Liberation Mono, monospace"><b>TODAY</b></font></p>
+			</td>
+		</tr>
+	</tbody>
+</table>
+<p><br/>
+<br/>
+
+</p>
+<h2 class="western">12. Verification Checklist</h2>
+<pre style="margin-bottom: 0.2in; background: #e1e1e1">python precompute.py --candidates ./candidates.jsonl --out-dir ./artifacts/<br/>
+time python rank.py --candidates ./candidates.jsonl --out ./submission.csv</pre>
+<ul>
+	<li><p>☐ <b>CSV header is </b><font face="Liberation Mono, monospace"><b>candidate_id,rank,score,reasoning</b></font>
+	(auto-reject check)</p></li>
+	<li><p>☐ Ordering assertion passes at load</p></li>
+	<li><p>☐ Runtime &lt; 300s on cold CPU</p></li>
+	<li><p>☐ No network calls (airplane mode)</p></li>
+	<li><p>☐ Zero hard-honeypots (suspicion≥3) in top 100</p></li>
+	<li><p>☐ Soft-honeypots (suspicion==2) penalized ×0.50, not
+	excluded</p></li>
+	<li><p>☐ Zero HR/Marketing/Accountant in top 100</p></li>
+	<li><p>☐ Top 10 are ML/AI/Search engineers with retrieval
+	evidence</p></li>
+	<li><p>☐ F1 weight (0.32) &gt; F2 weight (0.26) verified</p></li>
+	<li><p>☐ Feature 2 test: 3 strong skills &gt; 5 weak skills</p></li>
+	<li><p>☐ Feature 4 test: FAISS+Elasticsearch HIGH, PyTorch-only
+	LOW</p></li>
+	<li><p>☐ Stuffer check fires on test case (Tier-C + AI keywords +
+	low cred)</p></li>
+	<li><p>☐ Services: all-TCS w/ low f1 → ×0.40, all-HCL w/ high
+	f1 → ×0.80</p></li>
+	<li><p>☐ 10 reasoning samples: structurally different, facts
+	verifiable</p></li>
+	<li><p>☐ Scores monotonically non-increasing</p></li>
+	<li><p>☐ Cold Docker test: <font face="Liberation Mono, monospace">docker
+	run --network none &lt;img&gt; time python rank.py</font></p></li>
+</ul>
+<p><br/>
+<br/>
+
+</p>
+</body>
+</html>

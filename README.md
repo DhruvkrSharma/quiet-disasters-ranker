@@ -1,4 +1,4 @@
-# AI Candidate Ranking System — Team Quiet Disasters
+# Redrob AI Candidate Ranking System — Team Quiet Disasters
 
 **HuggingFace Sandbox (Live Demo):** [https://huggingface.co/spaces/Abhii2005/Quiet-Disasters-Ranker](https://huggingface.co/spaces/Abhii2005/Quiet-Disasters-Ranker)
 
@@ -9,6 +9,19 @@ Our solution is a highly optimized, multi-stage retrieval and ranking pipeline d
 ## 🚀 Execution & Reproduction (Stage 3 Compliance)
 
 As per the hackathon specification, our system uses a **two-phase architecture**: a GPU-accelerated precomputation step (to build embeddings and artifacts), and an ultra-fast CPU-only ranking step (to output the final CSV).
+
+### 0. Dataset Assembly (For Testers)
+
+Because GitHub limits file sizes to 100MB, the 465MB `candidates.jsonl` dataset is split into 10 smaller chunks under `data_chunks/`. Before running the pipeline, you must merge them back into a single file.
+
+```bash
+# Merge ALL chunks → full 100K dataset
+python merge_chunks.py
+
+# Alternatively, merge specific parts for partial/quick testing (e.g., 30K candidates)
+# python merge_chunks.py --parts 1 2 3 --out candidates_30k.jsonl
+```
+This will produce the `candidates.jsonl` file required for the pre-computation step.
 
 ### 1. Pre-Computation Phase (Generates Artifacts)
 *Note: Pre-computation exceeds the 5-minute window and uses the network to download local models, but it is executed offline before the ranking step.*
