@@ -1,6 +1,7 @@
 # Ignore artifacts and data
 artifacts/
 candidates.jsonl
+candidates_sample_1k.jsonl
 submission.csv
 
 # Python

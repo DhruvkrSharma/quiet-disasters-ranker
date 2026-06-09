@@ -7,8 +7,8 @@ Run on Kaggle/Colab (GPU) to generate all artifacts for offline ranking.
 # ============================================================================
 # CONFIGURE THESE PATHS FOR YOUR ENVIRONMENT
 # ============================================================================
-CANDIDATES_PATH = "/kaggle/input/datasets/abhinavshakya2005/candidates-jsonl/candidates.jsonl"
-OUT_DIR = "/kaggle/working/artifacts/"
+CANDIDATES_PATH = "./candidates.jsonl"
+OUT_DIR = "./artifacts/"
 # ============================================================================
 
 import json
