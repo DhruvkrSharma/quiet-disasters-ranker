@@ -14,6 +14,9 @@ As per the hackathon specification, our system uses a **two-phase architecture**
 
 Because GitHub limits file sizes to 100MB, the 465MB `candidates.jsonl` dataset is split into 10 smaller chunks under `data_chunks/`. Before running the pipeline, you must merge them back into a single file.
 
+> ⚠️ **IMPORTANT: Do not skip this step!**
+> If you clone the repo and immediately run `precompute.py`, it will crash with a **"File Not Found"** error because `candidates.jsonl` is ignored by Git. You MUST run the merge script below first.
+
 ```bash
 # Merge ALL chunks → full 100K dataset
 python merge_chunks.py
